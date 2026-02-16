@@ -16,8 +16,15 @@ import tensorflow as tf
 tf.random.set_seed(42)
 np.random.seed(42)
 
-# GPU memory optimization - delegate to TensorFlow
-print("✓ GPU acceleration enabled (TensorFlow will manage memory automatically)")
+# GPU memory growth - CRITICAL for GTX 1650 to avoid OOM
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"✓ GPU memory growth enabled for {len(gpus)} GPU(s)")
+    except RuntimeError as e:
+        print(f"Note: {e}")
 
 from tensorflow import keras
 from tensorflow.keras import layers
@@ -36,8 +43,8 @@ PROCESSED_DIR = PROJECT_DIR / "datasets" / "face-mask-detection-cnn"
 MODELS_DIR = PROJECT_DIR / "models"
 
 # Training parameters
-IMG_SIZE = (128, 128)  # Reduced from 224 to 128
-BATCH_SIZE = 4  # Ultra-small for GTX 1650 (4GB VRAM)
+IMG_SIZE = (128, 128)  # Balance between speed and accuracy
+BATCH_SIZE = 16  # Increased from 4 to 16 (now safe with uint8 + ImageDataGenerator)
 EPOCHS = 50
 LEARNING_RATE = 0.001
 VAL_SPLIT = 0.2
@@ -260,8 +267,9 @@ def prepare_dataset():
     print(f"  - Without Mask: {sum(1 for c in classes_data if c == 1)}")
     print(f"  - Mask Weared Incorrect: {sum(1 for c in classes_data if c == 2)}")
     
-    # Convert to numpy arrays
-    X = np.array(faces_data, dtype=np.float32) / 255.0
+    # CRITICAL OPTIMIZATION: Keep as uint8 in RAM to save 4x memory
+    # Convert to float32 only during batching (done by ImageDataGenerator)
+    X = np.array(faces_data, dtype=np.uint8)  # uint8 uses 4x less memory than float32
     y = np.array(classes_data)
     
     # Split dataset
@@ -291,29 +299,29 @@ def build_model(model_type="custom"):
     print("=" * 80)
     
     if model_type == "custom":
-        print("\nUsing Custom Minimal CNN (optimized for GTX 1650 - 4GB VRAM)")
+        print("\nUsing Optimized CNN for GTX 1650 (Memory-efficient with improved power)")
         model = keras.Sequential([
             layers.Input(shape=(128, 128, 3)),
             
-            # Block 1 - very small model
-            layers.Conv2D(8, (3, 3), activation='relu', padding='same'),
-            layers.MaxPooling2D((2, 2)),
-            layers.Dropout(0.25),
-            
-            # Block 2
-            layers.Conv2D(16, (3, 3), activation='relu', padding='same'),
-            layers.MaxPooling2D((2, 2)),
-            layers.Dropout(0.25),
-            
-            # Block 3
+            # Block 1 - Enhanced with more filters (safe with GlobalAveragePooling)
             layers.Conv2D(32, (3, 3), activation='relu', padding='same'),
             layers.MaxPooling2D((2, 2)),
             layers.Dropout(0.25),
             
-            # Global pooling and dense layers
+            # Block 2 - More discriminative power
+            layers.Conv2D(64, (3, 3), activation='relu', padding='same'),
+            layers.MaxPooling2D((2, 2)),
+            layers.Dropout(0.25),
+            
+            # Block 3 - Final feature extraction
+            layers.Conv2D(128, (3, 3), activation='relu', padding='same'),
+            layers.MaxPooling2D((2, 2)),
+            layers.Dropout(0.25),
+            
+            # GlobalAveragePooling2D drastically reduces memory while preserving features
             layers.GlobalAveragePooling2D(),
-            layers.Dense(64, activation='relu'),
-            layers.Dropout(0.3),
+            layers.Dense(128, activation='relu'),
+            layers.Dropout(0.5),
             layers.Dense(len(CLASS_MAPPING), activation='softmax')
         ])
     
@@ -355,14 +363,27 @@ def train_model(model, X_train, X_val, y_train, y_val):
     print(f"\nTraining for {EPOCHS} epochs with batch size {BATCH_SIZE}...")
     print("Using eager execution mode for better stability...")
     
-    # Train with numpy arrays directly - more stable with venv TensorFlow
-    history = model.fit(
+    # Use ImageDataGenerator for intelligent batch loading and memory efficiency
+    # This converts uint8 to float32 only per-batch, not all at once
+    train_datagen = ImageDataGenerator(rescale=1./255)  # Rescale uint8 -> float32 per batch
+    
+    # Create generators for memory-efficient batch loading
+    train_generator = train_datagen.flow(
         X_train, y_train,
         batch_size=BATCH_SIZE,
+        shuffle=True
+    )
+    
+    # Validation data - rescale uint8 on the fly
+    val_data = X_val.astype(np.float32) / 255.0
+    
+    history = model.fit(
+        train_generator,
         epochs=EPOCHS,
-        validation_data=(X_val, y_val),
+        validation_data=(val_data, y_val),
         callbacks=callbacks,
-        verbose=1
+        verbose=1,
+        steps_per_epoch=len(X_train) // BATCH_SIZE
     )
     
     return history
@@ -374,8 +395,9 @@ def evaluate_model(model, X_test, y_test):
     print("📊 EVALUATING MODEL")
     print("=" * 80)
     
-    # Evaluate
-    test_loss, test_accuracy = model.evaluate(X_test, y_test, verbose=0, batch_size=BATCH_SIZE)
+    # Convert test data to float32 for evaluation
+    X_test_float = X_test.astype(np.float32) / 255.0
+    test_loss, test_accuracy = model.evaluate(X_test_float, y_test, verbose=0, batch_size=BATCH_SIZE)
     
     print(f"\n🎯 Test Results:")
     print(f"  Loss:     {test_loss:.4f}")
@@ -384,7 +406,7 @@ def evaluate_model(model, X_test, y_test):
     # Per-class metrics
     from sklearn.metrics import classification_report, confusion_matrix
     
-    y_pred = model.predict(X_test, verbose=0, batch_size=BATCH_SIZE)
+    y_pred = model.predict(X_test_float, verbose=0, batch_size=BATCH_SIZE)
     y_pred_classes = np.argmax(y_pred, axis=1)
     
     print(f"\n📋 Classification Report:")
