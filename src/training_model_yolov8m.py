@@ -15,11 +15,14 @@ MODELS_DIR = PROJECT_DIR / "models"
 # If you have a GTX 1650, these are safe settings. Adjust if needed:
 # - More GPU RAM (8GB+): Increase BATCH_SIZE to 16-32
 # - Less GPU RAM (<4GB): Reduce BATCH_SIZE to 2-4
-EPOCHS = 100
+EPOCHS = 150
 BATCH_SIZE = 8  # GTX 1650 optimal: 8 (reduce to 4 if OOM errors)
 IMG_SIZE = 416  # Can reduce to 320 for GTX 1650 if memory issues
 PATIENCE = 20  # Early stopping patience
 DEVICE = 0 if torch.cuda.is_available() else "cpu"  # Use GPU if available
+
+BASE_NAME = "face_mask_detection_yolov8m_v2"
+PREDICTION_NAME = "predictions_yolov8m_v2"
 
 
 def verify_dataset():
@@ -140,7 +143,7 @@ def train_model():
             save=True,
             close_mosaic=10,
             project=str(RUNS_DIR),
-            name="face_mask_detection_yolov8m",
+            name=BASE_NAME,
             exist_ok=True,
             verbose=True,
             # Additional training parameters
@@ -188,7 +191,7 @@ def validate_model():
     print("=" * 80)
     
     # Find the best model
-    best_model_path = RUNS_DIR / "face_mask_detection_yolov8m" / "weights" / "best.pt"
+    best_model_path = RUNS_DIR / BASE_NAME / "weights" / "best.pt"
     
     if not best_model_path.exists():
         print(f"⚠️  Best model not found at {best_model_path}")
@@ -220,7 +223,7 @@ def test_model():
     print("🧪 Testing model...")
     print("=" * 80)
     
-    best_model_path = RUNS_DIR / "face_mask_detection_yolov8m" / "weights" / "best.pt"
+    best_model_path = RUNS_DIR / BASE_NAME / "weights" / "best.pt"
     
     if not best_model_path.exists():
         print(f"⚠️  Best model not found at {best_model_path}")
@@ -242,12 +245,12 @@ def test_model():
             device=DEVICE,
             save=True,
             project=str(RUNS_DIR),
-            name="predictions_yolov8m",
-            conf=0.5,
+            name=PREDICTION_NAME,
+            conf=0.4,
             iou=0.5
         )
         
-        print(f"\n✓ Predictions saved to {RUNS_DIR / 'predictions_yolov8m'}")
+        print(f"\n✓ Predictions saved to {RUNS_DIR / PREDICTION_NAME}")
         return results
         
     except Exception as e:
@@ -261,7 +264,7 @@ def export_model():
     print("📤 Exporting model...")
     print("=" * 80)
     
-    best_model_path = RUNS_DIR / "face_mask_detection_yolov8m" / "weights" / "best.pt"
+    best_model_path = RUNS_DIR / BASE_NAME / "weights" / "best.pt"
     
     if not best_model_path.exists():
         print(f"⚠️  Best model not found at {best_model_path}")
@@ -282,8 +285,8 @@ def export_model():
         
         # Also save the best.pt to models directory
         import shutil
-        shutil.copy(best_model_path, MODELS_DIR / "face_mask_detection_yolov8m_best.pt")
-        print(f"✓ Best model saved to {MODELS_DIR / 'face_mask_detection_yolov8m_best.pt'}")
+        shutil.copy(best_model_path, MODELS_DIR / f"{BASE_NAME}_best.pt")
+        print(f"✓ Best model saved to {MODELS_DIR / f'{BASE_NAME}_best.pt'}")
         
     except Exception as e:
         print(f"❌ Error during export: {e}")
