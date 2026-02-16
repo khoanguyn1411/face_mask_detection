@@ -42,10 +42,10 @@ PROCESSED_DIR = PROJECT_DIR / "datasets" / "face-mask-detection-cnn"
 MODELS_DIR = PROJECT_DIR / "models"
 
 # Training parameters
-IMG_SIZE = (128, 128)  # Balance between speed and accuracy
+IMG_SIZE = (192, 192)  # Balance between speed and accuracy
 BATCH_SIZE = 16  # Increased from 4 to 16 (now safe with uint8 + ImageDataGenerator)
 EPOCHS = 100
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.0001
 VAL_SPLIT = 0.2
 TEST_SPLIT = 0.1
 
