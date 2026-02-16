@@ -6,7 +6,6 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import cv2
 import numpy as np
-import mediapipe as mp
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
@@ -45,42 +44,10 @@ MODELS_DIR = PROJECT_DIR / "models"
 # Training parameters
 IMG_SIZE = (128, 128)  # Balance between speed and accuracy
 BATCH_SIZE = 16  # Increased from 4 to 16 (now safe with uint8 + ImageDataGenerator)
-EPOCHS = 50
+EPOCHS = 100
 LEARNING_RATE = 0.001
 VAL_SPLIT = 0.2
 TEST_SPLIT = 0.1
-
-# Initialize MediaPipe Face Detection
-try:
-    # Try newer MediaPipe API (Tasks)
-    from mediapipe.tasks import python
-    from mediapipe.tasks.python import vision
-    
-    # Download model if not exists or check for it
-    model_path = PROJECT_DIR / "face_detector.tflite"
-    if not model_path.exists():
-        import urllib.request
-        print("Downloading MediaPipe face detector model...")
-        PROJECT_DIR.mkdir(parents=True, exist_ok=True)
-        url = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
-        urllib.request.urlretrieve(url, model_path)
-
-    base_options = python.BaseOptions(model_asset_path=str(model_path))
-    options = vision.FaceDetectorOptions(
-        base_options=base_options,
-        min_detection_confidence=0.5
-    )
-    face_detector = vision.FaceDetector.create_from_options(options)
-    use_new_api = True
-except Exception as e:
-    # Fallback to older MediaPipe solutions API
-    print(f"⚠️  New API failed: {e}. Falling back to legacy MediaPipe solutions API")
-    import mediapipe.python.solutions.face_detection as mp_face_detection
-    face_detector = mp_face_detection.FaceDetection(
-        model_selection=1, 
-        min_detection_confidence=0.5
-    )
-    use_new_api = False
 
 # Class mapping
 CLASS_MAPPING = {
@@ -120,97 +87,36 @@ def parse_xml_annotation(xml_path):
     return filename, objects
 
 
-def extract_faces_with_mediapipe(image_path, xml_objects):
+def extract_faces_from_xml(image_path, xml_objects):
     """
-    Extract face regions using MediaPipe.
-    Falls back to XML bounding boxes if MediaPipe doesn't detect faces.
+    Extract face regions using XML bounding boxes directly.
+    No MediaPipe dependency needed.
     """
     image = cv2.imread(str(image_path))
     if image is None:
         return []
     
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    faces = []
     h, w = image.shape[:2]
     
-    faces = []
-    
-    try:
-        # Try using MediaPipe detection
-        if use_new_api:
-            # New Tasks API
-            from mediapipe import Image as MediaPipeImage
-            mp_image = MediaPipeImage.create_from_file(str(image_path))
-            detection_result = face_detector.detect(mp_image)
-            detections = detection_result.detections if detection_result else []
-        else:
-            # Legacy solutions API
-            results = face_detector.process(image_rgb)
-            detections = results.detections if results else []
+    # Extract faces using XML bounding boxes
+    for obj in xml_objects:
+        x_min, y_min, x_max, y_max = obj["bbox"]
         
-        if detections:
-            for detection in detections:
-                # Handle both API formats
-                if use_new_api:
-                    bbox = detection.bounding_box
-                    x_min = max(0, int(bbox.origin_x) - 10)
-                    y_min = max(0, int(bbox.origin_y) - 10)
-                    x_max = min(w, int(bbox.origin_x + bbox.width) + 10)
-                    y_max = min(h, int(bbox.origin_y + bbox.height) + 10)
-                else:
-                    bbox = detection.location_data.relative_bounding_box
-                    x_min = max(0, int(bbox.xmin * w) - 10)
-                    y_min = max(0, int(bbox.ymin * h) - 10)
-                    x_max = min(w, int((bbox.xmin + bbox.width) * w) + 10)
-                    y_max = min(h, int((bbox.ymin + bbox.height) * h) + 10)
-                
-                face_width = x_max - x_min
-                face_height = y_max - y_min
-                
-                for obj in xml_objects:
-                    xml_x_min, xml_y_min, xml_x_max, xml_y_max = obj["bbox"]
-                    xml_width = xml_x_max - xml_x_min
-                    xml_height = xml_y_max - xml_y_min
-                    
-                    # Check if MediaPipe detection overlaps with XML annotation
-                    if (abs(x_min - xml_x_min) < 20 and abs(y_min - xml_y_min) < 20 and
-                        abs(face_width - xml_width) < 50 and abs(face_height - xml_height) < 50):
-                        
-                        face_roi = image[y_min:y_max, x_min:x_max]
-                        if face_roi.shape[0] > 20 and face_roi.shape[1] > 20:
-                            faces.append({
-                                "image": face_roi,
-                                "class_id": obj["class_id"],
-                                "bbox": (x_min, y_min, x_max, y_max)
-                            })
-                        break
-    except Exception as e:
-        print(f"⚠️  MediaPipe detection failed: {str(e)[:50]}")
-    
-    # Fallback: Use XML bounding boxes if MediaPipe didn't find all faces
-    if len(faces) < len(xml_objects):
-        for obj in xml_objects:
-            x_min, y_min, x_max, y_max = obj["bbox"]
-            # Add padding
-            x_min = max(0, x_min - 10)
-            y_min = max(0, y_min - 10)
-            x_max = min(w, x_max + 10)
-            y_max = min(h, y_max + 10)
-            
-            face_roi = image[y_min:y_max, x_min:x_max]
-            
-            # Check if face is already in list (avoid duplicates)
-            is_duplicate = False
-            for existing_face in faces:
-                if np.array_equal(existing_face["image"], face_roi):
-                    is_duplicate = True
-                    break
-            
-            if not is_duplicate and face_roi.shape[0] > 20 and face_roi.shape[1] > 20:
-                faces.append({
-                    "image": face_roi,
-                    "class_id": obj["class_id"],
-                    "bbox": (x_min, y_min, x_max, y_max)
-                })
+        # Add padding
+        x_min = max(0, x_min - 10)
+        y_min = max(0, y_min - 10)
+        x_max = min(w, x_max + 10)
+        y_max = min(h, y_max + 10)
+        
+        face_roi = image[y_min:y_max, x_min:x_max]
+        
+        if face_roi.shape[0] > 20 and face_roi.shape[1] > 20:
+            faces.append({
+                "image": face_roi,
+                "class_id": obj["class_id"],
+                "bbox": (x_min, y_min, x_max, y_max)
+            })
     
     return faces
 
@@ -218,7 +124,7 @@ def extract_faces_with_mediapipe(image_path, xml_objects):
 def prepare_dataset():
     """Extract and prepare face images from the dataset."""
     print("=" * 80)
-    print("📊 PREPARING DATASET - Extracting Face Regions with MediaPipe")
+    print("📊 PREPARING DATASET - Extracting Face Regions from XML Annotations")
     print("=" * 80)
     
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
@@ -230,37 +136,29 @@ def prepare_dataset():
     
     print(f"\nProcessing {len(xml_files)} images...\n")
     
-    try:
-        for xml_file in tqdm(xml_files, desc="Extracting faces"):
-            try:
-                filename, xml_objects = parse_xml_annotation(xml_file)
-                image_path = IMAGES_DIR / filename
-                
-                if not image_path.exists():
-                    continue
-                
-                faces = extract_faces_with_mediapipe(image_path, xml_objects)
-                
-                for face_data in faces:
-                    face_image = face_data["image"]
-                    
-                    # Resize face to standard size
-                    face_resized = cv2.resize(face_image, IMG_SIZE)
-                    face_rgb = cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
-                    
-                    faces_data.append(face_rgb)
-                    classes_data.append(face_data["class_id"])
-            
-            except Exception as e:
-                print(f"Error processing {xml_file.name}: {str(e)[:50]}")
-                continue
-    finally:
-        # Close MediaPipe detector to avoid cleanup errors
+    for xml_file in tqdm(xml_files, desc="Extracting faces"):
         try:
-            if use_new_api and face_detector is not None:
-                face_detector.close()
-        except:
-            pass
+            filename, xml_objects = parse_xml_annotation(xml_file)
+            image_path = IMAGES_DIR / filename
+            
+            if not image_path.exists():
+                continue
+            
+            faces = extract_faces_from_xml(image_path, xml_objects)
+            
+            for face_data in faces:
+                face_image = face_data["image"]
+                
+                # Resize face to standard size
+                face_resized = cv2.resize(face_image, IMG_SIZE)
+                face_rgb = cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
+                
+                faces_data.append(face_rgb)
+                classes_data.append(face_data["class_id"])
+        
+        except Exception as e:
+            print(f"Error processing {xml_file.name}: {str(e)[:50]}")
+            continue
     
     print(f"\n✓ Extracted {len(faces_data)} face regions")
     print(f"  - With Mask: {sum(1 for c in classes_data if c == 0)}")
