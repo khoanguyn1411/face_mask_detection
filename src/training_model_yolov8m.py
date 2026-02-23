@@ -1,8 +1,13 @@
 import os
 import yaml
+import platform
 from pathlib import Path
 from ultralytics import YOLO
 import torch
+
+# Detect platform
+IS_MAC = platform.system() == "Darwin"
+IS_WINDOWS_OR_LINUX = platform.system() in ["Windows", "Linux"]
 
 # Configuration
 PROJECT_DIR = Path(__file__).parent.parent
@@ -10,16 +15,61 @@ DATASET_YAML = PROJECT_DIR / "datasets" / "face-mask-detection-processed" / "dat
 RUNS_DIR = PROJECT_DIR / "runs"
 MODELS_DIR = PROJECT_DIR / "models"
 
+# Device detection and configuration
+print("=" * 80)
+print("🖥️  DEVICE DETECTION")
+print("=" * 80)
+print(f"Platform: {platform.system()} {platform.release()}")
+
+DEVICE_INFO = {"type": "CPU", "is_gpu": False, "torch_device": "cpu"}
+
+if IS_MAC:
+    print("🍎 macOS detected - Using PyTorch with Metal Performance Shaders")
+    # Check if MPS is available (Apple Silicon)
+    if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        print("✓ Apple Metal Performance Shaders (MPS) available")
+        DEVICE_INFO = {"type": "Apple Silicon (Metal)", "is_gpu": True, "torch_device": "mps"}
+        # PyTorch will use MPS automatically
+    else:
+        print("⚠️  Metal GPU not available or not supported. Using CPU.")
+        DEVICE_INFO = {"type": "CPU", "is_gpu": False, "torch_device": "cpu"}
+    
+    # Configure batch size for M4 Pro
+    BATCH_SIZE_GPU = 32  # M4 Pro has good GPU bandwidth
+    
+elif IS_WINDOWS_OR_LINUX:
+    print("💻 Windows/Linux detected - Using PyTorch with CUDA (NVIDIA GPU)")
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+        total_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+        print(f"✓ NVIDIA GPU detected: {gpu_name}")
+        print(f"  Total Memory: {total_memory:.2f} GB")
+        DEVICE_INFO = {"type": f"NVIDIA CUDA ({gpu_name})", "is_gpu": True, "torch_device": 0}
+        
+        # Configure batch size based on GPU memory
+        if total_memory <= 4.5:
+            BATCH_SIZE_GPU = 8  # GTX 1650 or similar
+        elif total_memory <= 8:
+            BATCH_SIZE_GPU = 16
+        else:
+            BATCH_SIZE_GPU = 32
+    else:
+        print("⚠️  CUDA not available. Training will use CPU (slower).")
+        DEVICE_INFO = {"type": "CPU", "is_gpu": False, "torch_device": "cpu"}
+        BATCH_SIZE_GPU = 4
+else:
+    print(f"⚠️  Unknown platform: {platform.system()}")
+    BATCH_SIZE_GPU = 4
+
+print(f"Selected Device: {DEVICE_INFO['type']}")
+print("=" * 80 + "\n")
+
 # Training hyperparameters
-# NOTE: Optimized for GTX 1650 (4GB VRAM)
-# If you have a GTX 1650, these are safe settings. Adjust if needed:
-# - More GPU RAM (8GB+): Increase BATCH_SIZE to 16-32
-# - Less GPU RAM (<4GB): Reduce BATCH_SIZE to 2-4
 EPOCHS = 150
-BATCH_SIZE = 8  # GTX 1650 optimal: 8 (reduce to 4 if OOM errors)
-IMG_SIZE = 416  # Can reduce to 320 for GTX 1650 if memory issues
+BATCH_SIZE = BATCH_SIZE_GPU  # Dynamically set based on device
+IMG_SIZE = 416  # Can reduce to 320 if memory issues
 PATIENCE = 20  # Early stopping patience
-DEVICE = 0 if torch.cuda.is_available() else "cpu"  # Use GPU if available
+DEVICE = DEVICE_INFO['torch_device']  # Use device from configuration above
 
 BASE_NAME = "face_mask_detection_yolov8m_v2"
 PREDICTION_NAME = "predictions_yolov8m_v2"
@@ -49,36 +99,53 @@ def verify_dataset():
 
 def check_gpu_compatibility():
     """Check GPU compatibility and memory availability."""
-    if not torch.cuda.is_available():
-        print("⚠️  CUDA not available. Training will use CPU (very slow).")
-        return True
+    print("=" * 80)
+    print("💻 GPU Information & Compatibility Check")
+    print("=" * 80)
     
-    gpu_name = torch.cuda.get_device_name(0)
-    total_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+    if IS_MAC:
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            print("✓ Apple Metal Performance Shaders (MPS) Available")
+            print(f"  Device Type: {DEVICE_INFO['type']}")
+            print(f"  Batch Size: {BATCH_SIZE} (optimized for M4 Pro)")
+            print("\n✓ Metal GPU Configuration:")
+            print("  - FP16 Training: ENABLED (saves memory)")
+            print("  - Typical Training Speed: 15-25ms per iteration")
+        else:
+            print("⚠️  Metal GPU NOT available. Using CPU (very slow).")
+            print(f"  Batch Size: {BATCH_SIZE}")
     
-    print("💻 GPU Information:")
-    print(f"  Device: {gpu_name}")
-    print(f"  Total Memory: {total_memory:.2f} GB")
+    elif IS_WINDOWS_OR_LINUX:
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            total_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+            
+            print(f"✓ NVIDIA GPU Available")
+            print(f"  Device: {gpu_name}")
+            print(f"  Total Memory: {total_memory:.2f} GB")
+            print(f"  Batch Size: {BATCH_SIZE} (optimized for your GPU)")
+            
+            # Check if it's GTX 1650 or similar low-VRAM GPU
+            if total_memory <= 4.5:
+                print("\n⚠️  LOW VRAM GPU DETECTED (≤4.5GB)")
+                print("  Recommendations:")
+                if BATCH_SIZE > 4:
+                    print(f"    • If OOM errors: Reduce BATCH_SIZE to {max(2, BATCH_SIZE//2)}")
+                print(f"    • FP16 Training: ENABLED (saves ~50% memory)")
+                if IMG_SIZE > 320:
+                    print(f"    • Option: Reduce IMG_SIZE to 320 (currently {IMG_SIZE})")
+                print("  For GTX 1650 specifically:")
+                print("    ✓ Batch Size 8 should work")
+                print("    ✓ Batch Size 4 is safer if OOM errors occur")
+            elif total_memory <= 8:
+                print(f"\n✓ GPU Memory OK for Batch Size {BATCH_SIZE}")
+            else:
+                print(f"\n✓ GPU Memory Good for any configuration")
+        else:
+            print("⚠️  CUDA not available. Training will use CPU (very slow).")
+            print(f"  Batch Size: {BATCH_SIZE}")
     
-    # Check if it's GTX 1650 or similar low-VRAM GPU
-    if total_memory <= 4.5:
-        print("\n⚠️  LOW VRAM GPU DETECTED (≤4.5GB)")
-        print("  Recommendations:")
-        print(f"    • Current Batch Size: {BATCH_SIZE}")
-        if BATCH_SIZE > 4:
-            print(f"    • Recommended Batch Size: 2-4 (reduce to {max(2, BATCH_SIZE//2)})")
-        print(f"    • FP16 Training: ENABLED (saves ~50% memory) ✓")
-        if IMG_SIZE > 320:
-            print(f"    • Option: Reduce IMG_SIZE to 320 (currently {IMG_SIZE})")
-        print("  For GTX 1650 specifically:")
-        print("    ✓ Batch Size 8 should work")
-        print("    ✓ Batch Size 4 is safer")
-        print("    ✓ GPU memory will be mostly utilized (~80-90%)")
-    elif total_memory <= 8:
-        print(f"\n✓ GPU Memory OK for Batch Size {BATCH_SIZE}")
-    else:
-        print(f"\n✓ GPU Memory Good for any configuration")
-    
+    print("=" * 80 + "\n")
     return True
 
 
@@ -105,15 +172,24 @@ def train_model():
     print(f"  Epochs: {EPOCHS}")
     print(f"  Batch Size: {BATCH_SIZE}")
     print(f"  Image Size: {IMG_SIZE}x{IMG_SIZE}")
-    print(f"  Device: {'GPU' if DEVICE == 0 else 'CPU'}")
+    print(f"  Compute Device: {DEVICE_INFO['type']}")
     print(f"  Early Stopping Patience: {PATIENCE}")
     print(f"  Dataset: {DATASET_YAML}")
     
-    # Check CUDA availability
-    print(f"\n💻 CUDA Available: {torch.cuda.is_available()}")
-    if torch.cuda.is_available():
-        print(f"   GPU: {torch.cuda.get_device_name(0)}")
-        print(f"   Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    # Show device details
+    if IS_MAC and DEVICE_INFO['is_gpu']:
+        print(f"\n🍎 Apple Silicon Configuration:")
+        print(f"   Platform: macOS")
+        print(f"   Expected Speed: 15-25ms per iteration")
+    elif IS_WINDOWS_OR_LINUX and DEVICE_INFO['is_gpu']:
+        print(f"\n💻 NVIDIA CUDA Configuration:")
+        print(f"   Platform: {platform.system()}")
+        if torch.cuda.is_available():
+            print(f"   GPU: {torch.cuda.get_device_name(0)}")
+            print(f"   Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    else:
+        print(f"\n💻 CPU Configuration:")
+        print(f"   ⚠️  Training on CPU will be VERY SLOW")
     
     # Load or create YOLOv8m model
     print("\n" + "=" * 80)
@@ -164,7 +240,7 @@ def train_model():
             val=True,
             # Logging parameters
             plots=True,
-            half=torch.cuda.is_available(),  # Use FP16 if GPU available
+            half=DEVICE_INFO['is_gpu'],  # Use FP16 if GPU available (CUDA or MPS)
         )
         
         print("\n" + "=" * 80)
