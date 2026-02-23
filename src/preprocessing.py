@@ -27,11 +27,11 @@ CLASS_MAPPING = {
     "mask_weared_incorrect": 2
 }
 
-# Medical mask class mapping to face mask classes
+# Medical mask class mapping (only 3 classes)
 MEDICAL_MASK_CLASS_MAPPING = {
-    "face_other_covering": 0,  # Maps to "with_mask"
-    "hat": 1,                  # Maps to "without_mask"
-    "hood": 1                  # Maps to "without_mask"
+    "face_with_mask": 0,            # with_mask
+    "face_with_mask_incorrect": 2,  # mask_weared_incorrect
+    "face_no_mask": 1,              # without_mask
 }
 
 # Train/val/test split ratio
@@ -143,6 +143,11 @@ def parse_json_annotation(json_path, images_dir):
         if len(bbox) != 4:
             continue
         
+        # Get class name - only process if it's in MEDICAL_MASK_CLASS_MAPPING
+        class_name = ann.get("classname", "")
+        if class_name not in MEDICAL_MASK_CLASS_MAPPING:
+            continue  # Skip annotations with classes not in our mapping
+        
         xmin, ymin, xmax, ymax = bbox
         
         # Convert to YOLO format (normalized center_x, center_y, width, height)
@@ -151,9 +156,7 @@ def parse_json_annotation(json_path, images_dir):
         box_width = (xmax - xmin) / width
         box_height = (ymax - ymin) / height
         
-        # Get class name and map to face mask classes
-        class_name = ann.get("classname", "without_mask")
-        class_id = MEDICAL_MASK_CLASS_MAPPING.get(class_name, 1)
+        class_id = MEDICAL_MASK_CLASS_MAPPING[class_name]
         
         objects.append({
             "class_id": class_id,
@@ -162,6 +165,10 @@ def parse_json_annotation(json_path, images_dir):
             "width": box_width,
             "height": box_height
         })
+    
+    # Return None if image has no valid annotations
+    if not objects:
+        return None, None, None, []
     
     return filename, width, height, objects
 

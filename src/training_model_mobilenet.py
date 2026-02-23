@@ -1,8 +1,16 @@
 import os
+import platform
+
 # These MUST be set BEFORE importing tensorflow
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-# os.environ['TF_XLA_FLAGS'] = '--xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found'
+
+# Detect platform and configure appropriately
+IS_MAC = platform.system() == "Darwin"
+IS_WINDOWS_OR_LINUX = platform.system() in ["Windows", "Linux"]
+
+# Configure CUDA only for Windows/Linux with NVIDIA GPUs
+if IS_WINDOWS_OR_LINUX:
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'  # Use first GPU (GTX 1650)
 
 import cv2
 import numpy as np
@@ -15,39 +23,88 @@ import tensorflow as tf
 tf.random.set_seed(42)
 np.random.seed(42)
 
-# GPU memory growth - CRITICAL for GTX 1650 to avoid OOM
-gpus = tf.config.list_physical_devices('GPU')
-if gpus:
+# Device configuration and detection
+print("=" * 80)
+print("🖥️  DEVICE DETECTION")
+print("=" * 80)
+print(f"Platform: {platform.system()} {platform.release()}")
+
+DEVICE_INFO = {"type": "CPU", "is_gpu": False}
+
+if IS_MAC:
+    print("🍎 macOS detected - Using Metal Performance Shaders (MPS)")
     try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        print(f"✓ GPU memory growth enabled for {len(gpus)} GPU(s)")
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            print(f"✓ Apple Metal GPU detected: {len(gpus)} device(s)")
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            print(f"✓ GPU memory growth enabled for Apple Silicon")
+            DEVICE_INFO = {"type": "Apple Silicon (Metal)", "is_gpu": True}
+        else:
+            print("⚠️  No Metal GPU detected. Using CPU (slower).")
+    except Exception as e:
+        print(f"⚠️  Error configuring Metal GPU: {e}")
+        
+elif IS_WINDOWS_OR_LINUX:
+    print("💻 Windows/Linux detected - Using CUDA (NVIDIA GPU)")
+    try:
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            print(f"✓ NVIDIA GPU detected: {len(gpus)} device(s)")
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+                print(f"   - {gpu.name}")
+            print(f"✓ GPU memory growth enabled for CUDA")
+            DEVICE_INFO = {"type": "NVIDIA CUDA", "is_gpu": True}
+        else:
+            print("⚠️  No NVIDIA GPU detected. Using CPU (slower).")
+            # Unset CUDA_VISIBLE_DEVICES if no GPU found
+            os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
     except RuntimeError as e:
-        print(f"Note: {e}")
+        print(f"⚠️  Error configuring CUDA GPU: {e}")
+        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+else:
+    print(f"⚠️  Unknown platform: {platform.system()}")
+
+print(f"Selected Device: {DEVICE_INFO['type']}")
+print("=" * 80 + "\n")
 
 from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import matplotlib.pyplot as plt
-from tqdm import tqdm
-import xml.etree.ElementTree as ET
 
 # Configuration
 PROJECT_DIR = Path(__file__).parent.parent
-DATASET_DIR = PROJECT_DIR / "datasets" / "face-mask-detection"
-ANNOTATIONS_DIR = DATASET_DIR / "annotations"
-IMAGES_DIR = DATASET_DIR / "images"
-PROCESSED_DIR = PROJECT_DIR / "datasets" / "face-mask-detection-mobilenet"
+PREPROCESSED_DIR = PROJECT_DIR / "datasets" / "face-mask-detection-processed"
+IMAGES_TRAIN_DIR = PREPROCESSED_DIR / "images" / "train"
+IMAGES_VAL_DIR = PREPROCESSED_DIR / "images" / "val"
+IMAGES_TEST_DIR = PREPROCESSED_DIR / "images" / "test"
+LABELS_TRAIN_DIR = PREPROCESSED_DIR / "labels" / "train"
+LABELS_VAL_DIR = PREPROCESSED_DIR / "labels" / "val"
+LABELS_TEST_DIR = PREPROCESSED_DIR / "labels" / "test"
 MODELS_DIR = PROJECT_DIR / "models"
 
-# Training parameters
+# Training parameters - Optimized for both devices
 IMG_SIZE = (192, 192)  # Balance between speed and accuracy - smaller is faster
-BATCH_SIZE = 32  # Increased for stable gradient updates (was 16)
-EPOCHS = 150  # Extended for transfer learning fine-tuning (was 100)
-LEARNING_RATE = 0.0005  # Lower LR for fine-tuning pre-trained weights (was 0.0001)
-VAL_SPLIT = 0.2
-TEST_SPLIT = 0.1
+EPOCHS = 150  # Extended for transfer learning fine-tuning
+LEARNING_RATE = 0.0005  # Lower LR for fine-tuning pre-trained weights
+
+# Batch size depends on device - optimized for memory usage
+if DEVICE_INFO['is_gpu']:
+    if IS_MAC:
+        BATCH_SIZE = 32  # M4 Pro has good GPU bandwidth
+    else:  # NVIDIA GTX 1650
+        BATCH_SIZE = 16  # GTX 1650 has limited VRAM (~2-4GB)
+else:
+    BATCH_SIZE = 8  # CPU - use smaller batches
+
+# Split ratios (same as preprocessing.py)
+TRAIN_RATIO = 0.7
+VAL_RATIO = 0.2
+TEST_RATIO = 0.1
 
 # Class mapping
 CLASS_MAPPING = {
@@ -60,132 +117,96 @@ CLASS_MAPPING = {
 CLASS_NAMES = {v: k.replace("_", " ").title() for k, v in CLASS_MAPPING.items()}
 
 
-def parse_xml_annotation(xml_path):
-    """Parse XML annotation to get face labels."""
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
+def load_images_from_split(image_dir, labels_dir):
+    """Load all images from a split directory with their labels."""
+    images = []
+    classes = []
     
-    filename = root.find("filename").text
-    objects = []
+    # Get all image files
+    image_files = sorted(image_dir.glob("*.png")) + sorted(image_dir.glob("*.jpg")) + sorted(image_dir.glob("*.jpeg"))
     
-    for obj in root.findall("object"):
-        class_name = obj.find("name").text
-        bndbox = obj.find("bndbox")
-        
-        xmin = int(bndbox.find("xmin").text)
-        ymin = int(bndbox.find("ymin").text)
-        xmax = int(bndbox.find("xmax").text)
-        ymax = int(bndbox.find("ymax").text)
-        
-        class_id = CLASS_MAPPING.get(class_name, 1)
-        
-        objects.append({
-            "class_id": class_id,
-            "bbox": (xmin, ymin, xmax, ymax)
-        })
+    for img_path in image_files:
+        try:
+            # Read image
+            img = cv2.imread(str(img_path))
+            if img is None:
+                continue
+            
+            # Resize to standard size
+            img_resized = cv2.resize(img, IMG_SIZE)
+            img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+            
+            # Load corresponding label from YOLO format
+            label_path = labels_dir / (img_path.stem + ".txt")
+            
+            if label_path.exists():
+                try:
+                    with open(label_path, 'r') as f:
+                        line = f.readline().strip()
+                        if line:
+                            class_id = int(line.split()[0])
+                            images.append(img_rgb)
+                            classes.append(class_id)
+                except:
+                    pass
+        except Exception as e:
+            continue
     
-    return filename, objects
-
-
-def extract_faces_from_xml(image_path, xml_objects):
-    """
-    Extract face regions using XML bounding boxes directly.
-    No MediaPipe dependency needed.
-    """
-    image = cv2.imread(str(image_path))
-    if image is None:
-        return []
-    
-    faces = []
-    h, w = image.shape[:2]
-    
-    # Extract faces using XML bounding boxes
-    for obj in xml_objects:
-        x_min, y_min, x_max, y_max = obj["bbox"]
-        
-        # Add padding
-        x_min = max(0, x_min - 10)
-        y_min = max(0, y_min - 10)
-        x_max = min(w, x_max + 10)
-        y_max = min(h, y_max + 10)
-        
-        face_roi = image[y_min:y_max, x_min:x_max]
-        
-        if face_roi.shape[0] > 20 and face_roi.shape[1] > 20:
-            faces.append({
-                "image": face_roi,
-                "class_id": obj["class_id"],
-                "bbox": (x_min, y_min, x_max, y_max)
-            })
-    
-    return faces
+    return np.array(images, dtype=np.uint8), np.array(classes)
 
 
 def prepare_dataset():
-    """Extract and prepare face images from the dataset."""
+    """Load preprocessed dataset (includes both face-mask-detection and medical-mask-detection)."""
     print("=" * 80)
-    print("📊 PREPARING DATASET - Extracting Face Regions from XML Annotations")
+    print("📊 PREPARING DATASET - Loading from Preprocessed Split Directories")
+    print("   (Includes: face-mask-detection + medical-mask-detection)")
     print("=" * 80)
     
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    # Verify dataset exists
+    if not PREPROCESSED_DIR.exists():
+        print(f"❌ Error: Preprocessed dataset not found at {PREPROCESSED_DIR}")
+        print("Please run preprocessing.py first to prepare the dataset.")
+        return None
     
-    faces_data = []
-    classes_data = []
+    # Load train split
+    print(f"\nLoading train split...")
+    X_train, y_train = load_images_from_split(IMAGES_TRAIN_DIR, LABELS_TRAIN_DIR)
     
-    xml_files = sorted(ANNOTATIONS_DIR.glob("*.xml"))
+    # Load validation split
+    print(f"Loading validation split...")
+    X_val, y_val = load_images_from_split(IMAGES_VAL_DIR, LABELS_VAL_DIR)
     
-    print(f"\nProcessing {len(xml_files)} images...\n")
+    # Load test split
+    print(f"Loading test split...")
+    X_test, y_test = load_images_from_split(IMAGES_TEST_DIR, LABELS_TEST_DIR)
     
-    for xml_file in tqdm(xml_files, desc="Extracting faces"):
-        try:
-            filename, xml_objects = parse_xml_annotation(xml_file)
-            image_path = IMAGES_DIR / filename
-            
-            if not image_path.exists():
-                continue
-            
-            faces = extract_faces_from_xml(image_path, xml_objects)
-            
-            for face_data in faces:
-                face_image = face_data["image"]
-                
-                # Resize face to standard size
-                face_resized = cv2.resize(face_image, IMG_SIZE)
-                face_rgb = cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
-                
-                faces_data.append(face_rgb)
-                classes_data.append(face_data["class_id"])
-        
-        except Exception as e:
-            print(f"Error processing {xml_file.name}: {str(e)[:50]}")
-            continue
+    print(f"\n✓ Dataset Loaded Successfully")
+    print(f"\n📊 Loaded Face Regions:")
+    print(f"  Total: {len(X_train) + len(X_val) + len(X_test)} faces")
     
-    print(f"\n✓ Extracted {len(faces_data)} face regions")
-    print(f"  - With Mask: {sum(1 for c in classes_data if c == 0)}")
-    print(f"  - Without Mask: {sum(1 for c in classes_data if c == 1)}")
-    print(f"  - Mask Weared Incorrect: {sum(1 for c in classes_data if c == 2)}")
+    # Print train split statistics
+    print(f"\n  Train Split: {len(X_train)} images")
+    print(f"    - With Mask:              {sum(1 for c in y_train if c == 0)}")
+    print(f"    - Without Mask:           {sum(1 for c in y_train if c == 1)}")
+    print(f"    - Mask Weared Incorrect:  {sum(1 for c in y_train if c == 2)}")
     
-    # CRITICAL OPTIMIZATION: Keep as uint8 in RAM to save 4x memory
-    # Convert to float32 only during batching (done by ImageDataGenerator)
-    X = np.array(faces_data, dtype=np.uint8)  # uint8 uses 4x less memory than float32
-    y = np.array(classes_data)
+    # Print validation split statistics
+    print(f"\n  Validation Split: {len(X_val)} images")
+    print(f"    - With Mask:              {sum(1 for c in y_val if c == 0)}")
+    print(f"    - Without Mask:           {sum(1 for c in y_val if c == 1)}")
+    print(f"    - Mask Weared Incorrect:  {sum(1 for c in y_val if c == 2)}")
     
-    # Split dataset
-    X_train, X_temp, y_train, y_temp = train_test_split(
-        X, y, test_size=(VAL_SPLIT + TEST_SPLIT), random_state=42, stratify=y
-    )
+    # Print test split statistics
+    print(f"\n  Test Split: {len(X_test)} images")
+    print(f"    - With Mask:              {sum(1 for c in y_test if c == 0)}")
+    print(f"    - Without Mask:           {sum(1 for c in y_test if c == 1)}")
+    print(f"    - Mask Weared Incorrect:  {sum(1 for c in y_test if c == 2)}")
     
-    X_val, X_test, y_val, y_test = train_test_split(
-        X_temp, y_temp, 
-        test_size=TEST_SPLIT / (VAL_SPLIT + TEST_SPLIT),
-        random_state=42,
-        stratify=y_temp
-    )
-    
-    print(f"\n📂 Dataset Split:")
-    print(f"  Train: {len(X_train)} ({len(X_train)/len(X)*100:.1f}%)")
-    print(f"  Val:   {len(X_val)} ({len(X_val)/len(X)*100:.1f}%)")
-    print(f"  Test:  {len(X_test)} ({len(X_test)/len(X)*100:.1f}%)")
+    print(f"\n📂 Dataset Split Ratio:")
+    total = len(X_train) + len(X_val) + len(X_test)
+    print(f"  Train: {len(X_train)} ({len(X_train)/total*100:.1f}%)")
+    print(f"  Val:   {len(X_val)} ({len(X_val)/total*100:.1f}%)")
+    print(f"  Test:  {len(X_test)} ({len(X_test)/total*100:.1f}%)")
     
     return X_train, X_val, X_test, y_train, y_val, y_test
 
@@ -234,6 +255,7 @@ def build_model(model_type="mobilenet"):
     print("\n" + "=" * 80)
     print("🔧 BUILDING TRANSFER LEARNING MODEL (MobileNetV2 + Focal Loss)")
     print("=" * 80)
+    print(f"Compute Device: {DEVICE_INFO['type']}")
     
     # Resize input to match IMG_SIZE (currently 192x192)
     input_shape = (IMG_SIZE[0], IMG_SIZE[1], 3)
@@ -328,9 +350,10 @@ def train_model(model, X_train, X_val, y_train, y_val):
     
     print(f"\nTraining Configuration:")
     print(f"  Epochs:                  {EPOCHS}")
-    print(f"  Batch Size:              {BATCH_SIZE}")
+    print(f"  Batch Size:              {BATCH_SIZE} (optimized for {DEVICE_INFO['type']})")
     print(f"  Learning Rate:           {LEARNING_RATE}")
     print(f"  Early Stop Patience:     20 epochs")
+    print(f"  Compute Device:          {DEVICE_INFO['type']}")
     print(f"  Loss Function:           Focal Loss (γ=2.0, α=0.25)")
     print(f"  Data Augmentation:       rotation ±20°, shifts ±15%, zoom ±20%, flip")
     
@@ -440,12 +463,19 @@ def main():
     print("\n" + "=" * 80)
     print("🎯 Face Mask Detection - Transfer Learning Training")
     print("   Architecture: MobileNetV2 + Focal Loss")
-    print("   Goal: Detect minority classes (Without Mask, Incorrect Mask)")
+    print("   Datasets: Face-Mask-Detection + Medical-Mask-Detection (Combined)")
+    print("   Goal: Detect all mask classes with focus on minority classes")
     print("=" * 80)
     
     # Step 1: Prepare dataset
     print("\n[1/4] Preparing dataset...")
-    X_train, X_val, X_test, y_train, y_val, y_test = prepare_dataset()
+    dataset = prepare_dataset()
+    
+    if dataset is None:
+        print("\n❌ Failed to prepare dataset!")
+        return
+    
+    X_train, X_val, X_test, y_train, y_val, y_test = dataset
     
     # Step 2: Build model
     print("\n[2/4] Building model...")
