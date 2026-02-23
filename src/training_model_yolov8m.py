@@ -35,7 +35,7 @@ if IS_MAC:
         DEVICE_INFO = {"type": "CPU", "is_gpu": False, "torch_device": "cpu"}
     
     # Configure batch size for M4 Pro
-    BATCH_SIZE_GPU = 32  # M4 Pro has good GPU bandwidth
+    BATCH_SIZE_GPU = 16  # Reduced for faster training
     
 elif IS_WINDOWS_OR_LINUX:
     print("💻 Windows/Linux detected - Using PyTorch with CUDA (NVIDIA GPU)")
@@ -67,7 +67,7 @@ print("=" * 80 + "\n")
 # Training hyperparameters
 EPOCHS = 150
 BATCH_SIZE = BATCH_SIZE_GPU  # Dynamically set based on device
-IMG_SIZE = 320  # Optimized for fast inference and reduced NMS time
+IMG_SIZE = 256  # Reduced for faster training on macOS
 PATIENCE = 20  # Early stopping patience
 DEVICE = DEVICE_INFO['torch_device']  # Use device from configuration above
 
