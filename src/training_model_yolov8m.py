@@ -67,9 +67,14 @@ print("=" * 80 + "\n")
 # Training hyperparameters
 EPOCHS = 150
 BATCH_SIZE = BATCH_SIZE_GPU  # Dynamically set based on device
-IMG_SIZE = 416  # Can reduce to 320 if memory issues
+IMG_SIZE = 320  # Optimized for fast inference and reduced NMS time
 PATIENCE = 20  # Early stopping patience
 DEVICE = DEVICE_INFO['torch_device']  # Use device from configuration above
+
+# Inference optimization parameters
+CONF_THRESHOLD = 0.45  # Confidence threshold (lower = fewer detections, faster NMS)
+IOU_THRESHOLD = 0.45   # IOU threshold for NMS (lower = fewer overlapping boxes)
+MAX_DETECTIONS = 300   # Maximum detections per image (reduces NMS workload)
 
 BASE_NAME = "face_mask_detection_yolov8m_v2"
 PREDICTION_NAME = "predictions_yolov8m_v2"
@@ -175,6 +180,11 @@ def train_model():
     print(f"  Compute Device: {DEVICE_INFO['type']}")
     print(f"  Early Stopping Patience: {PATIENCE}")
     print(f"  Dataset: {DATASET_YAML}")
+    
+    print(f"\n  Inference Optimization (prevents NMS timeout):")
+    print(f"    - Confidence Threshold: {CONF_THRESHOLD}")
+    print(f"    - IOU Threshold: {IOU_THRESHOLD}")
+    print(f"    - Max Detections: {MAX_DETECTIONS}")
     
     # Show device details
     if IS_MAC and DEVICE_INFO['is_gpu']:
@@ -322,8 +332,12 @@ def test_model():
             save=True,
             project=str(RUNS_DIR),
             name=PREDICTION_NAME,
-            conf=0.4,
-            iou=0.5
+            conf=CONF_THRESHOLD,           # Optimized confidence threshold
+            iou=IOU_THRESHOLD,              # Optimized IOU threshold
+            max_det=MAX_DETECTIONS,         # Limit detections for faster NMS
+            imgsz=IMG_SIZE,                 # Use same image size as training
+            half=DEVICE_INFO['is_gpu'],     # Use FP16 if GPU available
+            verbose=True
         )
         
         print(f"\n✓ Predictions saved to {RUNS_DIR / PREDICTION_NAME}")
