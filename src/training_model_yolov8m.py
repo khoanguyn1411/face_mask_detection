@@ -65,11 +65,12 @@ print(f"Selected Device: {DEVICE_INFO['type']}")
 print("=" * 80 + "\n")
 
 # Training hyperparameters
-EPOCHS = 150
+EPOCHS = 100  # Reduced from 150 for faster iteration
 BATCH_SIZE = BATCH_SIZE_GPU  # Dynamically set based on device
-IMG_SIZE = 256  # Reduced for faster training on macOS
-PATIENCE = 20  # Early stopping patience
+IMG_SIZE = 192  # Reduced from 256 for faster training (4x faster per iteration)
+PATIENCE = 15  # Reduced early stopping patience
 DEVICE = DEVICE_INFO['torch_device']  # Use device from configuration above
+NUM_WORKERS = 4  # Parallel data loading (adjust based on CPU cores)
 
 # Inference optimization parameters
 CONF_THRESHOLD = 0.45  # Confidence threshold (lower = fewer detections, faster NMS)
@@ -227,20 +228,21 @@ def train_model():
             device=DEVICE,
             patience=PATIENCE,
             save=True,
-            close_mosaic=10,
+            close_mosaic=8,  # Reduced from 10 for faster training
             project=str(RUNS_DIR),
             name=BASE_NAME,
             exist_ok=True,
             verbose=True,
+            workers=NUM_WORKERS,  # Parallel data loading
             # Additional training parameters
             augment=True,
-            mosaic=1.0,
-            flipud=0.5,
-            fliplr=0.5,
-            degrees=10,
-            translate=0.1,
-            scale=0.5,
-            warmup_epochs=3,
+            mosaic=0.8,  # Reduced from 1.0 (mosaic less frequently)
+            flipud=0.3,  # Reduced from 0.5
+            fliplr=0.3,  # Reduced from 0.5
+            degrees=5,   # Reduced from 10
+            translate=0.05,  # Reduced from 0.1
+            scale=0.3,   # Reduced from 0.5
+            warmup_epochs=2,  # Reduced from 3
             lr0=0.01,
             lrf=0.01,
             momentum=0.937,
