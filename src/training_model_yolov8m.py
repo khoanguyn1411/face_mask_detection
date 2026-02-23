@@ -4,6 +4,8 @@ import platform
 from pathlib import Path
 from ultralytics import YOLO
 import torch
+import sys
+import argparse
 
 # Detect platform
 IS_MAC = platform.system() == "Darwin"
@@ -154,7 +156,24 @@ def check_gpu_compatibility():
     return True
 
 
-def train_model():
+def check_checkpoint():
+    """Check if there's a previous checkpoint to resume from."""
+    checkpoint_path = RUNS_DIR / BASE_NAME / "weights" / "last.pt"
+    
+    if checkpoint_path.exists():
+        print("=" * 80)
+        print("🔄 CHECKPOINT FOUND")
+        print("=" * 80)
+        print(f"📍 Found previous checkpoint at: {checkpoint_path}")
+        print("\nYou can resume training by running with: --resume")
+        print("Or start fresh with: --fresh")
+        print("=" * 80 + "\n")
+        return checkpoint_path
+    
+    return None
+
+
+def train_model(resume=False):
     """Train YOLOv8m model on face mask detection dataset."""
     print("=" * 80)
     print("🎯 YOLOv8m Training - Face Mask Detection")
@@ -203,12 +222,25 @@ def train_model():
     
     # Load or create YOLOv8m model
     print("\n" + "=" * 80)
-    print("📥 Loading YOLOv8m model...")
+    if resume:
+        print("📥 Resuming training from checkpoint...")
+    else:
+        print("📥 Loading YOLOv8m model...")
     print("=" * 80)
     
     try:
-        model = YOLO("yolov8m.pt")  # Load pretrained YOLOv8m
-        print("✓ YOLOv8m model loaded successfully")
+        if resume:
+            checkpoint_path = RUNS_DIR / BASE_NAME / "weights" / "last.pt"
+            if checkpoint_path.exists():
+                model = YOLO(str(checkpoint_path))
+                print(f"✓ Checkpoint loaded successfully: {checkpoint_path}")
+            else:
+                print(f"❌ Checkpoint not found at {checkpoint_path}")
+                print("Starting fresh training instead...")
+                model = YOLO("yolov8m.pt")
+        else:
+            model = YOLO("yolov8m.pt")  # Load pretrained YOLOv8m
+            print("✓ YOLOv8m model loaded successfully")
     except Exception as e:
         print(f"❌ Error loading model: {e}")
         return None
@@ -216,6 +248,7 @@ def train_model():
     # Train the model
     print("\n" + "=" * 80)
     print("🚀 Starting training...")
+    print("💡 Press Ctrl+C to pause training (checkpoint will be saved)")
     print("=" * 80)
     
     try:
@@ -232,6 +265,7 @@ def train_model():
             name=BASE_NAME,
             exist_ok=True,
             verbose=True,
+            resume=resume,  # Resume from checkpoint if True
             # Additional training parameters
             augment=True,
             mosaic=1.0,
@@ -262,6 +296,16 @@ def train_model():
         print(f"  Best model path: {model.trainer.best.name if hasattr(model, 'trainer') else 'See runs directory'}")
         
         return results
+        
+    except KeyboardInterrupt:
+        print("\n\n" + "=" * 80)
+        print("⏸️  Training paused by user (Ctrl+C)")
+        print("=" * 80)
+        print("\n💾 Checkpoint has been saved automatically!")
+        print(f"📍 Run with: python src/training_model_yolov8m.py --resume")
+        print("   to continue training from where you left off")
+        print("=" * 80 + "\n")
+        return None
         
     except Exception as e:
         print(f"\n❌ Error during training: {e}")
@@ -385,11 +429,40 @@ def export_model():
 
 def main():
     """Main training pipeline."""
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="YOLOv8m Training for Face Mask Detection")
+    parser.add_argument('--resume', action='store_true', help='Resume training from last checkpoint')
+    parser.add_argument('--fresh', action='store_true', help='Start fresh training (ignore previous checkpoint)')
+    args = parser.parse_args()
+    
+    # Check for checkpoint
+    checkpoint = check_checkpoint()
+    
+    # Determine if we should resume
+    resume = False
+    if args.resume and checkpoint:
+        resume = True
+        print("▶️  Resuming training from checkpoint...\n")
+    elif args.fresh:
+        print("🆕 Starting fresh training (ignoring checkpoint)...\n")
+    elif checkpoint and not args.resume:
+        # Ask user interactively
+        print("\n❓ How would you like to proceed?")
+        print("   1. Resume from checkpoint (--resume)")
+        print("   2. Start fresh (--fresh)")
+        choice = input("\nEnter choice (1 or 2) [default=1]: ").strip() or "1"
+        if choice == "1":
+            resume = True
+        print()
+    
     # Train model
-    train_results = train_model()
+    train_results = train_model(resume=resume)
     
     if train_results is None:
-        print("\n❌ Training failed!")
+        if resume:
+            print("💡 Training paused. Run again with --resume to continue!")
+        else:
+            print("\n❌ Training failed or paused!")
         return
     
     # Validate model
