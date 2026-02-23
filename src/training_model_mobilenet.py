@@ -118,7 +118,7 @@ CLASS_NAMES = {v: k.replace("_", " ").title() for k, v in CLASS_MAPPING.items()}
 
 
 def load_images_from_split(image_dir, labels_dir):
-    """Load all images from a split directory with their labels."""
+    """Load images and extract face crops using bounding box annotations."""
     images = []
     classes = []
     
@@ -132,9 +132,7 @@ def load_images_from_split(image_dir, labels_dir):
             if img is None:
                 continue
             
-            # Resize to standard size
-            img_resized = cv2.resize(img, IMG_SIZE)
-            img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+            img_height, img_width = img.shape[:2]
             
             # Load corresponding label from YOLO format
             label_path = labels_dir / (img_path.stem + ".txt")
@@ -142,13 +140,47 @@ def load_images_from_split(image_dir, labels_dir):
             if label_path.exists():
                 try:
                     with open(label_path, 'r') as f:
-                        line = f.readline().strip()
-                        if line:
-                            class_id = int(line.split()[0])
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            
+                            parts = line.split()
+                            class_id = int(parts[0])
+                            
+                            # Parse YOLO format (normalized coordinates)
+                            center_x = float(parts[1])
+                            center_y = float(parts[2])
+                            bbox_width = float(parts[3])
+                            bbox_height = float(parts[4])
+                            
+                            # Denormalize coordinates to pixel values
+                            x_min = int((center_x - bbox_width / 2) * img_width)
+                            y_min = int((center_y - bbox_height / 2) * img_height)
+                            x_max = int((center_x + bbox_width / 2) * img_width)
+                            y_max = int((center_y + bbox_height / 2) * img_height)
+                            
+                            # Clip to image boundaries
+                            x_min = max(0, x_min)
+                            y_min = max(0, y_min)
+                            x_max = min(img_width, x_max)
+                            y_max = min(img_height, y_max)
+                            
+                            # Extract face crop
+                            face_crop = img[y_min:y_max, x_min:x_max]
+                            
+                            # Skip if crop is too small or invalid
+                            if face_crop.shape[0] < 10 or face_crop.shape[1] < 10:
+                                continue
+                            
+                            # Resize to standard size
+                            img_resized = cv2.resize(face_crop, IMG_SIZE)
+                            img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+                            
                             images.append(img_rgb)
                             classes.append(class_id)
-                except:
-                    pass
+                except Exception as e:
+                    continue
         except Exception as e:
             continue
     
@@ -156,10 +188,10 @@ def load_images_from_split(image_dir, labels_dir):
 
 
 def prepare_dataset():
-    """Load preprocessed dataset (includes both face-mask-detection and medical-mask-detection)."""
+    """Load preprocessed dataset and extract face crops using bounding boxes."""
     print("=" * 80)
-    print("📊 PREPARING DATASET - Loading from Preprocessed Split Directories")
-    print("   (Includes: face-mask-detection + medical-mask-detection)")
+    print("📊 PREPARING DATASET - Extracting Face Crops from YOLO Annotations")
+    print("   (Extracting faces from: face-mask-detection + medical-mask-detection)")
     print("=" * 80)
     
     # Verify dataset exists
@@ -169,20 +201,20 @@ def prepare_dataset():
         return None
     
     # Load train split
-    print(f"\nLoading train split...")
+    print(f"\nExtracting train split face crops...")
     X_train, y_train = load_images_from_split(IMAGES_TRAIN_DIR, LABELS_TRAIN_DIR)
     
     # Load validation split
-    print(f"Loading validation split...")
+    print(f"Extracting validation split face crops...")
     X_val, y_val = load_images_from_split(IMAGES_VAL_DIR, LABELS_VAL_DIR)
     
     # Load test split
-    print(f"Loading test split...")
+    print(f"Extracting test split face crops...")
     X_test, y_test = load_images_from_split(IMAGES_TEST_DIR, LABELS_TEST_DIR)
     
-    print(f"\n✓ Dataset Loaded Successfully")
-    print(f"\n📊 Loaded Face Regions:")
-    print(f"  Total: {len(X_train) + len(X_val) + len(X_test)} faces")
+    print(f"\n✓ Face Crops Extracted Successfully")
+    print(f"\n📊 Extracted Face Regions:")
+    print(f"  Total: {len(X_train) + len(X_val) + len(X_test)} face crops")
     
     # Print train split statistics
     print(f"\n  Train Split: {len(X_train)} images")
@@ -378,6 +410,9 @@ def train_model(model, X_train, X_val, y_train, y_val):
     # Validation data - rescale uint8 on the fly
     val_data = X_val.astype(np.float32) / 255.0
     
+    # Calculate steps per epoch (ceiling division to ensure full coverage)
+    steps_per_epoch = int(np.ceil(len(X_train) / BATCH_SIZE))
+    
     history = model.fit(
         train_generator,
         epochs=EPOCHS,
@@ -385,7 +420,7 @@ def train_model(model, X_train, X_val, y_train, y_val):
         callbacks=callbacks,
         verbose=1,
         class_weight=class_weight_dict,  # Apply class weights with focal loss
-        steps_per_epoch=len(X_train) // BATCH_SIZE
+        steps_per_epoch=steps_per_epoch  # Explicitly set steps per epoch
     )
     
     return history
