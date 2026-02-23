@@ -109,9 +109,24 @@ def parse_json_annotation(json_path, images_dir):
         return None, None, None, []
     
     filename = data.get("FileName", "")
-    image_path = images_dir / filename
     
-    # Get image dimensions using PIL or opencv
+    # Try to find the image file with different extensions
+    base_filename = filename.rsplit('.', 1)[0] if '.' in filename else filename
+    possible_extensions = ['.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG']
+    
+    image_path = None
+    for ext in possible_extensions:
+        candidate_path = images_dir / (base_filename + ext)
+        if candidate_path.exists():
+            image_path = candidate_path
+            filename = base_filename + ext
+            break
+    
+    if image_path is None or not image_path.exists():
+        print(f"Error: Image file not found for {base_filename} in {images_dir}")
+        return None, None, None, []
+    
+    # Get image dimensions using PIL
     try:
         from PIL import Image
         img = Image.open(image_path)
