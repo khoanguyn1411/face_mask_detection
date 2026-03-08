@@ -538,7 +538,7 @@ def save_model(model):
     """Save trained model."""
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    model_path = MODELS_DIR / "face_mask_mobilenet_yolo26m_best.h5"
+    model_path = MODELS_DIR / "face_mask_mobilenetV3_yolo26m_best.h5"
     model.save(str(model_path))
 
     print(f"\n✓ Model saved to {model_path}")

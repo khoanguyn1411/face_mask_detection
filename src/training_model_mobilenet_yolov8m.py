@@ -574,12 +574,12 @@ def main():
     print("\n[4/4] Evaluating model...")
     test_accuracy, y_pred = evaluate_model(model, X_test, y_test)
 
-    # Save model
-    save_model(model)
-
     # Visualize training
     print("\n📈 Visualizing training history...")
     visualize_training(history)
+
+    # Save model
+    save_model(model)
 
     print("\n" + "=" * 80)
     print("✅ Training Complete!")
