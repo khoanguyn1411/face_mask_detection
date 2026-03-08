@@ -1,5 +1,7 @@
 .venv
 yolov8m.pt
+yolo26m.pt
+yoloe-26m-seg.pt
 datasets
 runs
 face_detector.tflite
