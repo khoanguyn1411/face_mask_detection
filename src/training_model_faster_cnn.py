@@ -1,220 +1,361 @@
-import torch
-import torchvision
-from torchvision.models.detection import fasterrcnn_resnet50_fpn
-from torchvision.transforms import transforms
-from torch.utils.data import DataLoader, Dataset
-import cv2
-import numpy as np
-from pathlib import Path
 import os
-import sys
-from xml.etree import ElementTree as ET
+from pathlib import Path
+
+import cv2
+import torch
+from torch.utils.data import DataLoader, Dataset
+from torchvision.models.detection import (
+    FasterRCNN_ResNet50_FPN_Weights,
+    fasterrcnn_resnet50_fpn,
+)
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+DATASET_DIR = PROJECT_DIR / "datasets" / "face-mask-detection-processed"
+TRAIN_IMAGES_DIR = DATASET_DIR / "images" / "train"
+TRAIN_LABELS_DIR = DATASET_DIR / "labels" / "train"
+VAL_IMAGES_DIR = DATASET_DIR / "images" / "val"
+VAL_LABELS_DIR = DATASET_DIR / "labels" / "val"
+MODELS_DIR = PROJECT_DIR / "models"
+FINAL_MODEL_PATH = MODELS_DIR / "face_mask_detection_faster_rcnn_final.pt"
+BEST_MODEL_PATH = MODELS_DIR / "face_mask_detection_faster_rcnn_best.pt"
+
+CLASS_NAMES = {
+    0: "With Mask",
+    1: "Without Mask",
+    2: "Mask Weared Incorrect",
+}
+NUM_CLASSES = len(CLASS_NAMES) + 1
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 
 class FaceMaskDataset(Dataset):
-    """Dataset class for face mask detection with Faster R-CNN"""
+    """Dataset for Faster R-CNN training from YOLO-format labels."""
 
-    def __init__(self, img_dir, annotations_dir, transforms=None):
-        self.img_dir = Path(img_dir)
-        self.annotations_dir = Path(annotations_dir)
-        self.transforms = transforms
-        # Get all images recursively from subdirectories (train, val, test)
-        self.images = sorted(list(self.img_dir.glob(
-            '**/*.jpg')) + list(self.img_dir.glob('**/*.png')))
+    def __init__(self, image_dir, label_dir):
+        self.image_dir = Path(image_dir)
+        self.label_dir = Path(label_dir)
+
+        if not self.image_dir.exists():
+            raise FileNotFoundError(f"Image directory not found: {self.image_dir}")
+        if not self.label_dir.exists():
+            raise FileNotFoundError(f"Label directory not found: {self.label_dir}")
+
+        self.images = sorted(
+            path for path in self.image_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+        )
+        if not self.images:
+            raise FileNotFoundError(f"No images found in {self.image_dir}")
+
+        self.missing_label_files = [
+            path.name for path in self.images
+            if not (self.label_dir / f"{path.stem}.txt").exists()
+        ]
 
     def __len__(self):
         return len(self.images)
 
-    def __getitem__(self, idx):
-        img_path = self.images[idx]
-        image = cv2.imread(str(img_path))
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        image = torch.as_tensor(
-            image, dtype=torch.float32).permute(2, 0, 1) / 255.0
-
-        # Load bounding boxes and labels from XML annotation
-        annot_path = self.annotations_dir / (img_path.stem + '.xml')
+    def _read_targets(self, img_path, img_w, img_h):
+        label_path = self.label_dir / f"{img_path.stem}.txt"
         boxes = []
         labels = []
 
-        if annot_path.exists():
-            try:
-                tree = ET.parse(str(annot_path))
-                root = tree.getroot()
+        if not label_path.exists():
+            return (
+                torch.zeros((0, 4), dtype=torch.float32),
+                torch.zeros((0,), dtype=torch.int64),
+            )
 
-                for obj in root.findall('object'):
-                    label_name = obj.find('name').text
-                    # Map labels: with_mask=1, without_mask=2
-                    label = 1 if 'with_mask' in label_name.lower() else 2
+        for line_number, line in enumerate(label_path.read_text().splitlines(), start=1):
+            parts = line.strip().split()
+            if not parts:
+                continue
+            if len(parts) != 5:
+                raise ValueError(
+                    f"Invalid YOLO label format in {label_path} at line {line_number}: {line}"
+                )
 
-                    bndbox = obj.find('bndbox')
-                    xmin = float(bndbox.find('xmin').text)
-                    ymin = float(bndbox.find('ymin').text)
-                    xmax = float(bndbox.find('xmax').text)
-                    ymax = float(bndbox.find('ymax').text)
+            class_id = int(parts[0])
+            if class_id not in CLASS_NAMES:
+                raise ValueError(
+                    f"Unknown class id {class_id} in {label_path} at line {line_number}"
+                )
 
-                    labels.append(label)
-                    boxes.append([xmin, ymin, xmax, ymax])
-            except Exception as e:
-                print(f"Error parsing {annot_path}: {e}")
+            center_x, center_y, box_w, box_h = map(float, parts[1:])
+            x1 = max(0.0, (center_x - box_w / 2.0) * img_w)
+            y1 = max(0.0, (center_y - box_h / 2.0) * img_h)
+            x2 = min(float(img_w), (center_x + box_w / 2.0) * img_w)
+            y2 = min(float(img_h), (center_y + box_h / 2.0) * img_h)
+
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            boxes.append([x1, y1, x2, y2])
+            labels.append(class_id + 1)
 
         if not boxes:
-            boxes = torch.zeros((0, 4), dtype=torch.float32)
-            labels = torch.zeros((0,), dtype=torch.int64)
+            return (
+                torch.zeros((0, 4), dtype=torch.float32),
+                torch.zeros((0,), dtype=torch.int64),
+            )
+
+        return (
+            torch.as_tensor(boxes, dtype=torch.float32),
+            torch.as_tensor(labels, dtype=torch.int64),
+        )
+
+    def __getitem__(self, idx):
+        img_path = self.images[idx]
+        image = cv2.imread(str(img_path))
+        if image is None:
+            raise ValueError(f"Failed to read image: {img_path}")
+
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        img_h, img_w = image.shape[:2]
+        boxes, labels = self._read_targets(img_path, img_w, img_h)
+
+        image_tensor = torch.as_tensor(
+            image, dtype=torch.float32
+        ).permute(2, 0, 1) / 255.0
+
+        if boxes.numel() == 0:
+            area = torch.zeros((0,), dtype=torch.float32)
         else:
-            boxes = torch.as_tensor(boxes, dtype=torch.float32)
-            labels = torch.as_tensor(labels, dtype=torch.int64)
+            area = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
 
         target = {
-            'boxes': boxes,
-            'labels': labels,
-            'image_id': torch.tensor([idx]),
-            'area': (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0]),
-            'iscrowd': torch.zeros((len(boxes),), dtype=torch.int64)
+            "boxes": boxes,
+            "labels": labels,
+            "image_id": torch.tensor([idx], dtype=torch.int64),
+            "area": area,
+            "iscrowd": torch.zeros((len(labels),), dtype=torch.int64),
         }
-
-        if self.transforms:
-            image = self.transforms(image)
-
-        return image, target
+        return image_tensor, target
 
 
 def collate_fn(batch):
-    """Custom collate function for DataLoader"""
+    """Custom collate function for detection models."""
     return tuple(zip(*batch))
 
 
-def train():
-    # Configuration
-    DATASET_PATH = '/Users/khoanguyen/Workspace/UIT/face_mask_detection/datasets/face-mask-detection-processed'
-    MODEL_SAVE_PATH = '/Users/khoanguyen/Workspace/UIT/face_mask_detection/models/face_mask_detection_faster_rcnn.pt'
-    NUM_EPOCHS = 15
-    BATCH_SIZE = 4
-    LEARNING_RATE = 0.005
+def create_model():
+    """Create Faster R-CNN model with a 3-class detection head."""
+    weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
+    model = fasterrcnn_resnet50_fpn(weights=weights)
 
-    # Device setup
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-
-    # Model setup - Faster R-CNN with ResNet50 backbone
-    # Load pretrained model with default weights (91 COCO classes)
-    from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-    model = fasterrcnn_resnet50_fpn(weights='DEFAULT')
-
-    # Replace the classifier with 3 classes (background + with_mask + without_mask)
-    num_classes = 3
     in_features = model.roi_heads.box_predictor.cls_score.in_features
-    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, NUM_CLASSES)
+    return model
 
-    model.to(device)
 
-    # Dataset and DataLoader
-    if os.path.exists(DATASET_PATH):
-        img_dir = os.path.join(DATASET_PATH, 'images')
-        annot_dir = os.path.join(DATASET_PATH, 'labels')
+def create_dataloader(dataset, batch_size, shuffle, device):
+    """Create a dataloader with conservative worker settings."""
+    cpu_count = os.cpu_count() or 0
+    num_workers = min(4, cpu_count)
+    if device.type == "cpu":
+        num_workers = min(2, num_workers)
 
-        if os.path.exists(img_dir) and os.path.exists(annot_dir):
-            print(f"Loading dataset from {DATASET_PATH}")
-            train_dataset = FaceMaskDataset(
-                img_dir=img_dir,
-                annotations_dir=annot_dir
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=device.type == "cuda",
+        collate_fn=collate_fn,
+    )
+
+
+def move_batch_to_device(images, targets, device):
+    """Move a detection batch to the selected device."""
+    images = [image.to(device) for image in images]
+    targets = [
+        {
+            key: value.to(device) if isinstance(value, torch.Tensor) else value
+            for key, value in target.items()
+        }
+        for target in targets
+    ]
+    return images, targets
+
+
+def train_one_epoch(model, dataloader, optimizer, device, epoch_index, num_epochs):
+    """Run one training epoch and return average loss."""
+    model.train()
+    total_loss = 0.0
+
+    for batch_index, (images, targets) in enumerate(dataloader, start=1):
+        images, targets = move_batch_to_device(images, targets, device)
+
+        loss_dict = model(images, targets)
+        losses = sum(loss for loss in loss_dict.values())
+        loss_value = float(losses.item())
+
+        optimizer.zero_grad()
+        losses.backward()
+        optimizer.step()
+
+        total_loss += loss_value
+
+        if batch_index % 10 == 0 or batch_index == len(dataloader):
+            print(
+                f"  Epoch [{epoch_index}/{num_epochs}] "
+                f"Batch [{batch_index}/{len(dataloader)}] "
+                f"Loss: {loss_value:.4f}"
             )
 
-            if len(train_dataset) == 0:
-                print("Warning: No images found in dataset!")
-                return
+    return total_loss / max(len(dataloader), 1)
 
-            train_loader = DataLoader(
-                train_dataset,
-                batch_size=BATCH_SIZE,
-                shuffle=True,
-                num_workers=2,
-                collate_fn=collate_fn
-            )
 
-            print(f"Dataset loaded: {len(train_dataset)} images")
-        else:
-            print(f"Image or annotation directory not found!")
-            return
-    else:
-        print(f"Dataset path not found: {DATASET_PATH}")
-        return
+def calculate_validation_loss(model, dataloader, device):
+    """Calculate validation loss.
 
-    # Optimizer - only optimize parameters with requires_grad=True
-    params = [p for p in model.parameters() if p.requires_grad]
+    Torchvision detection models only return a loss dictionary when targets are
+    provided, so validation is intentionally run in train mode under no_grad.
+    """
+    model.train()
+    total_loss = 0.0
+
+    with torch.no_grad():
+        for images, targets in dataloader:
+            images, targets = move_batch_to_device(images, targets, device)
+            loss_dict = model(images, targets)
+            losses = sum(loss for loss in loss_dict.values())
+            total_loss += float(losses.item())
+
+    return total_loss / max(len(dataloader), 1)
+
+
+def save_checkpoint(model, optimizer, epoch, train_loss, val_loss, save_path):
+    """Save a training checkpoint with model metadata."""
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    checkpoint = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "train_loss": train_loss,
+        "val_loss": val_loss,
+        "class_names": CLASS_NAMES,
+        "num_classes": NUM_CLASSES,
+        "dataset_dir": str(DATASET_DIR),
+    }
+    torch.save(checkpoint, save_path)
+
+
+def print_dataset_summary(train_dataset, val_dataset):
+    """Print a brief overview of the train and validation splits."""
+    print(f"Train images: {len(train_dataset)}")
+    print(f"Validation images: {len(val_dataset)}")
+
+    if train_dataset.missing_label_files:
+        print(
+            f"Warning: {len(train_dataset.missing_label_files)} train images are missing label files"
+        )
+    if val_dataset.missing_label_files:
+        print(
+            f"Warning: {len(val_dataset.missing_label_files)} validation images are missing label files"
+        )
+
+
+def train():
+    """Train Faster R-CNN on the processed face mask dataset."""
+    num_epochs = 15
+    batch_size = 4
+    learning_rate = 0.005
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+
+    print(f"Using device: {device}")
+    print(f"Project directory: {PROJECT_DIR}")
+    print(f"Dataset directory: {DATASET_DIR}")
+    print(f"Train images dir: {TRAIN_IMAGES_DIR}")
+    print(f"Train labels dir: {TRAIN_LABELS_DIR}")
+    print(f"Validation images dir: {VAL_IMAGES_DIR}")
+    print(f"Validation labels dir: {VAL_LABELS_DIR}")
+
+    train_dataset = FaceMaskDataset(TRAIN_IMAGES_DIR, TRAIN_LABELS_DIR)
+    val_dataset = FaceMaskDataset(VAL_IMAGES_DIR, VAL_LABELS_DIR)
+    print_dataset_summary(train_dataset, val_dataset)
+
+    train_loader = create_dataloader(train_dataset, batch_size, True, device)
+    val_loader = create_dataloader(val_dataset, batch_size, False, device)
+
+    model = create_model().to(device)
+
+    params = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = torch.optim.SGD(
-        params, lr=LEARNING_RATE, momentum=0.9, weight_decay=0.0005)
+        params,
+        lr=learning_rate,
+        momentum=0.9,
+        weight_decay=0.0005,
+    )
     lr_scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=5, gamma=0.1)
+        optimizer,
+        step_size=5,
+        gamma=0.1,
+    )
 
-    # Training loop
-    print("Starting training...")
+    print("Starting Faster R-CNN training...")
+    best_val_loss = float("inf")
+
     try:
-        for epoch in range(NUM_EPOCHS):
-            model.train()
-            total_loss = 0
-            batch_count = 0
-
-            for batch_idx, (images, targets) in enumerate(train_loader):
-                images = [img.to(device) for img in images]
-                targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v
-                           for k, v in t.items()} for t in targets]
-
-                # Forward pass
-                loss_dict = model(images, targets)
-                losses = sum(loss for loss in loss_dict.values())
-
-                # Backward pass
-                optimizer.zero_grad()
-                losses.backward()
-                optimizer.step()
-
-                total_loss += losses.item()
-                batch_count += 1
-
-                if (batch_idx + 1) % 5 == 0:
-                    print(
-                        f"  Batch [{batch_idx+1}/{len(train_loader)}], Loss: {losses.item():.4f}")
-
-            avg_loss = total_loss / batch_count if batch_count > 0 else 0
+        for epoch in range(1, num_epochs + 1):
+            train_loss = train_one_epoch(model, train_loader, optimizer, device, epoch, num_epochs)
+            val_loss = calculate_validation_loss(model, val_loader, device)
             lr_scheduler.step()
-            print(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Avg Loss: {avg_loss:.4f}")
 
-        # Save model
-        os.makedirs(os.path.dirname(MODEL_SAVE_PATH), exist_ok=True)
-        print(f"Saving model to {MODEL_SAVE_PATH}...")
-        torch.save(model.state_dict(), MODEL_SAVE_PATH)
-        print(f"✓ Model saved successfully!")
+            current_lr = optimizer.param_groups[0]["lr"]
+            print(
+                f"Epoch [{epoch}/{num_epochs}] "
+                f"Train Loss: {train_loss:.4f} | "
+                f"Val Loss: {val_loss:.4f} | "
+                f"LR: {current_lr:.6f}"
+            )
 
-        # Verify file was created
-        if os.path.exists(MODEL_SAVE_PATH):
-            file_size = os.path.getsize(
-                MODEL_SAVE_PATH) / (1024**2)  # Size in MB
-            print(f"✓ Model file verified: {file_size:.2f} MB")
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                save_checkpoint(
+                    model,
+                    optimizer,
+                    epoch,
+                    train_loss,
+                    val_loss,
+                    BEST_MODEL_PATH,
+                )
+                print(f"  Saved best checkpoint to {BEST_MODEL_PATH}")
 
-        print(f"\n✓ Training completed successfully!")
-        print(f"Model file location: {MODEL_SAVE_PATH}")
-        print(f"Script will now exit.")
-        sys.stdout.flush()
-        return
+        save_checkpoint(
+            model,
+            optimizer,
+            num_epochs,
+            train_loss,
+            val_loss,
+            FINAL_MODEL_PATH,
+        )
+        print(f"Saved final checkpoint to {FINAL_MODEL_PATH}")
+
+        if BEST_MODEL_PATH.exists():
+            best_size_mb = BEST_MODEL_PATH.stat().st_size / (1024 ** 2)
+            print(f"Best checkpoint size: {best_size_mb:.2f} MB")
+        if FINAL_MODEL_PATH.exists():
+            final_size_mb = FINAL_MODEL_PATH.stat().st_size / (1024 ** 2)
+            print(f"Final checkpoint size: {final_size_mb:.2f} MB")
+
+        print("Training completed successfully.")
 
     except KeyboardInterrupt:
-        print("\n⚠ Training interrupted by user")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n✗ Error during training: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        print("\nTraining interrupted by user.")
+        raise SystemExit(1)
+    except Exception as exc:
+        print(f"\nTraining failed: {exc}")
+        raise
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print("\n========== FASTER R-CNN TRAINING START ==========")
     print(f"PID: {os.getpid()}")
-    print("="*50)
-    try:
-        train()
-    finally:
-        print("\n========== SCRIPT TERMINATING ==========")
-        import sys
-        sys.exit(0)
+    print("=" * 50)
+    train()
