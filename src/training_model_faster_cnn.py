@@ -29,6 +29,9 @@ CLASS_NAMES = {
 NUM_CLASSES = len(CLASS_NAMES) + 1
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
+# Speed-focused defaults. Set FAST_TRAINING = False for full training.
+FAST_TRAINING = True
+
 
 class FaceMaskDataset(Dataset):
     """Dataset for Faster R-CNN training from YOLO-format labels."""
@@ -38,9 +41,11 @@ class FaceMaskDataset(Dataset):
         self.label_dir = Path(label_dir)
 
         if not self.image_dir.exists():
-            raise FileNotFoundError(f"Image directory not found: {self.image_dir}")
+            raise FileNotFoundError(
+                f"Image directory not found: {self.image_dir}")
         if not self.label_dir.exists():
-            raise FileNotFoundError(f"Label directory not found: {self.label_dir}")
+            raise FileNotFoundError(
+                f"Label directory not found: {self.label_dir}")
 
         self.images = sorted(
             path for path in self.image_dir.iterdir()
@@ -143,7 +148,17 @@ def collate_fn(batch):
 def create_model():
     """Create Faster R-CNN model with a 3-class detection head."""
     weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
-    model = fasterrcnn_resnet50_fpn(weights=weights)
+    model = fasterrcnn_resnet50_fpn(
+        weights=weights,
+        trainable_backbone_layers=1,
+        min_size=512,
+        max_size=768,
+    )
+
+    # Freeze most of the backbone to speed up CPU training.
+    for name, parameter in model.backbone.named_parameters():
+        if "layer4" not in name:
+            parameter.requires_grad = False
 
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, NUM_CLASSES)
@@ -260,9 +275,16 @@ def print_dataset_summary(train_dataset, val_dataset):
 
 def train():
     """Train Faster R-CNN on the processed face mask dataset."""
-    num_epochs = 15
-    batch_size = 4
-    learning_rate = 0.005
+    if FAST_TRAINING:
+        num_epochs = 6
+        batch_size = 2
+        learning_rate = 0.002
+        validate_every = 2
+    else:
+        num_epochs = 15
+        batch_size = 4
+        learning_rate = 0.005
+        validate_every = 1
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type == "cuda":
@@ -275,6 +297,7 @@ def train():
     print(f"Train labels dir: {TRAIN_LABELS_DIR}")
     print(f"Validation images dir: {VAL_IMAGES_DIR}")
     print(f"Validation labels dir: {VAL_LABELS_DIR}")
+    print(f"Fast training mode: {FAST_TRAINING}")
 
     train_dataset = FaceMaskDataset(TRAIN_IMAGES_DIR, TRAIN_LABELS_DIR)
     val_dataset = FaceMaskDataset(VAL_IMAGES_DIR, VAL_LABELS_DIR)
@@ -285,7 +308,8 @@ def train():
 
     model = create_model().to(device)
 
-    params = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    params = [parameter for parameter in model.parameters()
+              if parameter.requires_grad]
     optimizer = torch.optim.SGD(
         params,
         lr=learning_rate,
@@ -303,8 +327,14 @@ def train():
 
     try:
         for epoch in range(1, num_epochs + 1):
-            train_loss = train_one_epoch(model, train_loader, optimizer, device, epoch, num_epochs)
-            val_loss = calculate_validation_loss(model, val_loader, device)
+            train_loss = train_one_epoch(
+                model, train_loader, optimizer, device, epoch, num_epochs)
+
+            if epoch % validate_every == 0 or epoch == num_epochs:
+                val_loss = calculate_validation_loss(model, val_loader, device)
+            else:
+                val_loss = float("nan")
+
             lr_scheduler.step()
 
             current_lr = optimizer.param_groups[0]["lr"]
@@ -315,7 +345,8 @@ def train():
                 f"LR: {current_lr:.6f}"
             )
 
-            if val_loss < best_val_loss:
+            val_loss_is_valid = not torch.isnan(torch.tensor(val_loss))
+            if val_loss_is_valid and val_loss < best_val_loss:
                 best_val_loss = val_loss
                 save_checkpoint(
                     model,
