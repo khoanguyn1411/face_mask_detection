@@ -5,3 +5,5 @@ yoloe-26m-seg.pt
 datasets
 runs
 face_detector.tflite
+.DS_Store
+models

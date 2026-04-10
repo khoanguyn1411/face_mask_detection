@@ -30,8 +30,10 @@ MAX_DETECTIONS = 300
 TABLE_COLUMNS = ["label", "confidence", "x1", "y1", "x2", "y2"]
 EXAMPLE_IMAGES = [
     PROJECT_ROOT / "datasets" / "face-mask-detection" / "images" / "maksssksksss0.png",
-    PROJECT_ROOT / "datasets" / "face-mask-detection" / "images" / "maksssksksss25.png",
-    PROJECT_ROOT / "datasets" / "face-mask-detection" / "images" / "maksssksksss83.png",
+    PROJECT_ROOT / "datasets" / "face-mask-detection" /
+    "images" / "maksssksksss25.png",
+    PROJECT_ROOT / "datasets" / "face-mask-detection" /
+    "images" / "maksssksksss83.png",
 ]
 CLASS_COLORS = {
     "With Mask": (38, 120, 76),
@@ -157,13 +159,15 @@ body {
 def discover_models() -> dict[str, tuple[Path, Literal["yolo", "faster_rcnn"]]]:
     """Load the two primary face mask detection models."""
     models = {}
-    
+
     if MODEL_FASTER_RCNN.exists():
-        models["face_mask_detection_faster_rcnn_final.pt"] = (MODEL_FASTER_RCNN, "faster_rcnn")
-    
+        models["face_mask_detection_faster_rcnn_final.pt"] = (
+            MODEL_FASTER_RCNN, "faster_rcnn")
+
     if MODEL_YOLO26M.exists():
-        models["face_mask_detection_yolo26m_v1_best.pt"] = (MODEL_YOLO26M, "yolo")
-    
+        models["face_mask_detection_yolo26m_v1_best.pt"] = (
+            MODEL_YOLO26M, "yolo")
+
     return models
 
 
@@ -192,7 +196,7 @@ DEVICE, DEVICE_LABEL = select_device()
 def load_model(model_name: str):
     """Load model based on type (YOLO or Faster RCNN)."""
     model_path, model_type = AVAILABLE_MODELS[model_name]
-    
+
     if model_type == "yolo":
         return YOLO(str(model_path))
     elif model_type == "faster_rcnn":
@@ -201,8 +205,9 @@ def load_model(model_name: str):
             map_loc = f"cuda:{DEVICE}"
         else:
             map_loc = DEVICE
-        
-        model = fasterrcnn_resnet50_fpn(pretrained=False, num_classes=4)
+
+        model = fasterrcnn_resnet50_fpn(
+            weights=None, weights_backbone=None, num_classes=4)
         checkpoint = torch.load(str(model_path), map_location=map_loc)
         # Handle both direct state dict and checkpoint dict
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
@@ -302,7 +307,7 @@ def draw_detections(image: Image.Image, detections: list[dict[str, object]]) -> 
 
 def build_summary(model_name: str, detections: list[dict[str, object]]) -> str:
     message = [
-        f"## Detection Summary",
+        "## Detection Summary",
         f"**Model:** {model_name}",
         f"**Device:** {DEVICE_LABEL}",
         f"**Faces detected:** {len(detections)}",
@@ -349,15 +354,16 @@ def run_detection_faster_rcnn(
 ) -> list[dict[str, object]]:
     """Run Faster RCNN detection on image."""
     rgb_image = image.convert("RGB")
-    img_array = np.array(rgb_image).transpose(2, 0, 1).astype(np.float32) / 255.0
+    img_array = np.array(rgb_image).transpose(
+        2, 0, 1).astype(np.float32) / 255.0
     img_tensor = torch.from_numpy(img_array).unsqueeze(0).to(DEVICE)
-    
+
     with torch.no_grad():
         outputs = model(img_tensor)
-    
+
     detections = []
     names = {0: "With Mask", 1: "Without Mask", 2: "Mask Weared Incorrect"}
-    
+
     for box, score, label in zip(outputs[0]["boxes"], outputs[0]["scores"], outputs[0]["labels"]):
         if float(score) >= confidence_threshold:
             # Faster R-CNN was trained with background=0, classes=1..3.
@@ -374,7 +380,7 @@ def run_detection_faster_rcnn(
                 "x2": x2,
                 "y2": y2,
             })
-    
+
     detections.sort(key=lambda x: float(x["confidence"]), reverse=True)
     return detections
 
@@ -390,14 +396,16 @@ def run_detection(
 
     model = load_model(model_name)
     model_path, model_type = AVAILABLE_MODELS[model_name]
-    
+
     if model_type == "yolo":
-        detections = run_detection_yolo(image, model, confidence_threshold, iou_threshold)
+        detections = run_detection_yolo(
+            image, model, confidence_threshold, iou_threshold)
     elif model_type == "faster_rcnn":
-        detections = run_detection_faster_rcnn(image, model, confidence_threshold)
+        detections = run_detection_faster_rcnn(
+            image, model, confidence_threshold)
     else:
         detections = []
-    
+
     rgb_image = image.convert("RGB")
     annotated_image = draw_detections(rgb_image, detections)
     detections_table = pd.DataFrame(detections, columns=TABLE_COLUMNS)
@@ -405,10 +413,29 @@ def run_detection(
     return annotated_image, detections_table, build_summary(model_name, detections)
 
 
+def run_realtime_detection(
+    image: Image.Image | None,
+    model_name: str,
+    confidence_threshold: float,
+    iou_threshold: float,
+):
+    """Run detection for webcam stream frames and return light-weight outputs."""
+    if image is None:
+        return None, initial_summary()
+
+    annotated_image, _, summary = run_detection(
+        image,
+        model_name,
+        confidence_threshold,
+        iou_threshold,
+    )
+    return annotated_image, summary
+
+
 def build_demo() -> gr.Blocks:
     example_inputs = [str(path) for path in EXAMPLE_IMAGES if path.exists()]
 
-    with gr.Blocks(title="Face Mask Detection Demo") as demo:
+    with gr.Blocks(title="Face Mask Detection Demo", css=CSS) as demo:
         gr.Markdown(
             "# Face Mask Detection Demo\n\n"
             "Upload an image to detect faces and classify each face as With Mask, "
@@ -417,53 +444,111 @@ def build_demo() -> gr.Blocks:
         )
 
         with gr.Row():
-            with gr.Column(scale=5):
-                input_image = gr.Image(
-                    type="pil",
-                    image_mode="RGB",
-                    sources=["upload", "clipboard"],
-                    label="Input image",
-                )
-                model_dropdown = gr.Dropdown(
-                    choices=list(AVAILABLE_MODELS.keys()),
-                    value=DEFAULT_MODEL_NAME,
-                    label="Checkpoint",
-                )
-                confidence_slider = gr.Slider(
-                    minimum=0.1,
-                    maximum=0.95,
-                    step=0.05,
-                    value=DEFAULT_CONFIDENCE,
-                    label="Confidence threshold",
-                )
-                iou_slider = gr.Slider(
-                    minimum=0.1,
-                    maximum=0.95,
-                    step=0.05,
-                    value=DEFAULT_IOU,
-                    label="IoU threshold",
-                )
-                detect_button = gr.Button("Run detection", variant="primary")
+            model_dropdown = gr.Dropdown(
+                choices=list(AVAILABLE_MODELS.keys()),
+                value=DEFAULT_MODEL_NAME,
+                label="Checkpoint",
+            )
+            confidence_slider = gr.Slider(
+                minimum=0.1,
+                maximum=0.95,
+                step=0.05,
+                value=DEFAULT_CONFIDENCE,
+                label="Confidence threshold",
+            )
+            iou_slider = gr.Slider(
+                minimum=0.1,
+                maximum=0.95,
+                step=0.05,
+                value=DEFAULT_IOU,
+                label="IoU threshold",
+            )
 
-                if example_inputs:
-                    gr.Examples(examples=example_inputs, inputs=input_image, label="Quick examples")
-
-            with gr.Column(scale=7, elem_id="result-panel"):
-                output_image = gr.Image(type="pil", label="Annotated result")
-                summary = gr.Markdown(value=initial_summary())
-                detections_table = gr.Dataframe(
-                    value=empty_table(),
-                    headers=TABLE_COLUMNS,
-                    datatype=["str", "number", "number", "number", "number", "number"],
-                    interactive=False,
-                    label="Detected faces",
-                )
-
-        detect_button.click(
-            fn=run_detection,
-            inputs=[input_image, model_dropdown, confidence_slider, iou_slider],
-            outputs=[output_image, detections_table, summary],
+        gr.Markdown(
+            "Use **Image mode** for detailed analysis with a detections table, "
+            "or **Realtime mode** for webcam streaming."
         )
+
+        with gr.Tabs():
+            with gr.TabItem("Image mode"):
+                with gr.Row():
+                    with gr.Column(scale=5):
+                        input_image = gr.Image(
+                            type="pil",
+                            image_mode="RGB",
+                            sources=["upload", "clipboard"],
+                            label="Input image",
+                        )
+                        detect_button = gr.Button("Run detection", variant="primary")
+
+                        if example_inputs:
+                            gr.Examples(
+                                examples=example_inputs,
+                                inputs=input_image,
+                                label="Quick examples",
+                            )
+
+                    with gr.Column(scale=7, elem_id="result-panel"):
+                        output_image = gr.Image(type="pil", label="Annotated result")
+                        summary = gr.Markdown(value=initial_summary())
+                        detections_table = gr.Dataframe(
+                            value=empty_table(),
+                            headers=TABLE_COLUMNS,
+                            datatype=[
+                                "str",
+                                "number",
+                                "number",
+                                "number",
+                                "number",
+                                "number",
+                            ],
+                            interactive=False,
+                            label="Detected faces",
+                        )
+
+                detect_button.click(
+                    fn=run_detection,
+                    inputs=[
+                        input_image,
+                        model_dropdown,
+                        confidence_slider,
+                        iou_slider,
+                    ],
+                    outputs=[output_image, detections_table, summary],
+                )
+
+            with gr.TabItem("Realtime mode"):
+                gr.Markdown(
+                    "Start webcam and stream predictions frame-by-frame. "
+                    "For smoother realtime performance, use the YOLO checkpoint."
+                )
+
+                with gr.Row():
+                    with gr.Column(scale=5):
+                        webcam_input = gr.Image(
+                            type="pil",
+                            image_mode="RGB",
+                            sources=["webcam"],
+                            streaming=True,
+                            label="Webcam stream",
+                        )
+                    with gr.Column(scale=7, elem_id="result-panel"):
+                        realtime_output_image = gr.Image(
+                            type="pil", label="Realtime annotated stream"
+                        )
+                        realtime_summary = gr.Markdown(value=initial_summary())
+
+                webcam_input.stream(
+                    fn=run_realtime_detection,
+                    inputs=[
+                        webcam_input,
+                        model_dropdown,
+                        confidence_slider,
+                        iou_slider,
+                    ],
+                    outputs=[realtime_output_image, realtime_summary],
+                    show_progress="hidden",
+                )
 
     return demo
 
@@ -471,12 +556,29 @@ def build_demo() -> gr.Blocks:
 def main() -> None:
     load_model(DEFAULT_MODEL_NAME)
     demo = build_demo()
-    demo.launch(
-        server_name=os.getenv("WEB_DEMO_HOST", "127.0.0.1"),
-        server_port=int(os.getenv("WEB_DEMO_PORT", "7860")),
-        inbrowser=os.getenv("WEB_DEMO_OPEN_BROWSER", "false").lower() == "true",
-        css=CSS,
-    )
+    host = os.getenv("WEB_DEMO_HOST", "127.0.0.1")
+    port = int(os.getenv("WEB_DEMO_PORT", "7860"))
+    open_browser = os.getenv("WEB_DEMO_OPEN_BROWSER",
+                             "false").lower() == "true"
+    share = os.getenv("WEB_DEMO_SHARE", "false").lower() == "true"
+
+    launch_kwargs = {
+        "server_name": host,
+        "server_port": port,
+        "inbrowser": open_browser,
+        # Work around Gradio schema generation failures in mixed dependency sets.
+        "show_api": False,
+        "share": share,
+    }
+
+    try:
+        demo.launch(**launch_kwargs)
+    except ValueError as exc:
+        if "localhost is not accessible" not in str(exc):
+            raise
+        # Auto-fallback for remote/devcontainer sessions where localhost checks fail.
+        launch_kwargs["share"] = True
+        demo.launch(**launch_kwargs)
 
 
 if __name__ == "__main__":
