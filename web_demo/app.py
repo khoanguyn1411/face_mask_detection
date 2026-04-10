@@ -221,6 +221,103 @@ def load_model(model_name: str):
         raise ValueError(f"Unknown model type: {model_type}")
 
 
+def resolve_yolo_model_name(preferred_model_name: str) -> str:
+    """Pick a YOLO checkpoint, preferring the requested model name."""
+    preferred = AVAILABLE_MODELS.get(preferred_model_name)
+    if preferred and preferred[1] == "yolo":
+        return preferred_model_name
+
+    for model_name, (_, model_type) in AVAILABLE_MODELS.items():
+        if model_type == "yolo":
+            return model_name
+
+    raise ValueError("No YOLO checkpoint is available for webcam mode.")
+
+
+def run_native_webcam_detection(model_name: str, confidence_threshold: float) -> None:
+    """Run local realtime webcam detection using OpenCV + YOLO."""
+    yolo_model_name = resolve_yolo_model_name(model_name)
+    model_path, _ = AVAILABLE_MODELS[yolo_model_name]
+    model = YOLO(str(model_path))
+
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        raise RuntimeError("Could not open webcam (camera index 0).")
+
+    print("Starting native webcam detection. Press 'q' to quit.")
+
+    try:
+        while cap.isOpened():
+            success, frame = cap.read()
+            if not success:
+                break
+
+            results = model.predict(
+                source=frame,
+                conf=confidence_threshold,
+                iou=DEFAULT_IOU,
+                imgsz=IMAGE_SIZE,
+                max_det=MAX_DETECTIONS,
+                device=DEVICE,
+                verbose=False,
+            )
+
+            names = results[0].names or {}
+
+            for box in results[0].boxes:
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                class_id = int(box.cls[0].item()
+                               ) if box.cls is not None else -1
+                confidence = float(
+                    box.conf[0].item()) if box.conf is not None else 0.0
+                label = names.get(class_id, str(class_id))
+                display_text = f"{label} {confidence:.2f}"
+
+                cv2.rectangle(
+                    frame,
+                    (int(x1), int(y1)),
+                    (int(x2), int(y2)),
+                    (0, 255, 0),
+                    2,
+                )
+
+                (text_width, text_height), baseline = cv2.getTextSize(
+                    display_text,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    1,
+                )
+                text_x = int(x1)
+                text_y = int(y1) - 8
+                if text_y - text_height < 0:
+                    text_y = int(y1) + text_height + 8
+
+                cv2.rectangle(
+                    frame,
+                    (text_x, text_y - text_height - baseline - 4),
+                    (text_x + text_width + 8, text_y + baseline - 4),
+                    (0, 255, 0),
+                    -1,
+                )
+                cv2.putText(
+                    frame,
+                    display_text,
+                    (text_x + 4, text_y - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 0, 0),
+                    1,
+                    cv2.LINE_AA,
+                )
+
+            cv2.imshow("YOLO Face Detection", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+
 def empty_table() -> pd.DataFrame:
     return pd.DataFrame(columns=TABLE_COLUMNS)
 
@@ -556,6 +653,17 @@ def build_demo() -> gr.Blocks:
 
 
 def main() -> None:
+    native_webcam = os.getenv("WEB_DEMO_NATIVE_WEBCAM",
+                              "false").lower() == "true"
+    native_model_name = os.getenv("WEB_DEMO_NATIVE_MODEL", DEFAULT_MODEL_NAME)
+    native_confidence = float(
+        os.getenv("WEB_DEMO_NATIVE_CONFIDENCE", str(DEFAULT_CONFIDENCE))
+    )
+
+    if native_webcam:
+        run_native_webcam_detection(native_model_name, native_confidence)
+        return
+
     load_model(DEFAULT_MODEL_NAME)
     demo = build_demo()
     host = os.getenv("WEB_DEMO_HOST", "127.0.0.1")
