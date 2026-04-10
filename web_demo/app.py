@@ -36,11 +36,40 @@ EXAMPLE_IMAGES = [
     "images" / "maksssksksss83.png",
 ]
 CLASS_COLORS = {
-    "With Mask": (38, 120, 76),
-    "Without Mask": (192, 57, 43),
-    "Mask Weared Incorrect": (214, 137, 16),
+    "With Mask": (38, 166, 91),
+    "Without Mask": (241, 196, 15),
+    "Mask Weared Incorrect": (231, 76, 60),
 }
 FALLBACK_COLOR = (34, 94, 168)
+
+
+def canonicalize_label(label: str) -> str:
+    """Normalize model label text to known class names."""
+    normalized = label.strip().lower().replace("_", " ").replace("-", " ")
+    normalized = " ".join(normalized.split())
+
+    if normalized in {"with mask", "mask", "masked"}:
+        return "With Mask"
+    if normalized in {"without mask", "no mask", "withoutmask", "nomask"}:
+        return "Without Mask"
+    if normalized in {
+        "mask weared incorrect",
+        "mask worn incorrect",
+        "incorrect mask",
+        "mask incorrect",
+        "incorrectly worn mask",
+    }:
+        return "Mask Weared Incorrect"
+
+    return label
+
+
+def color_for_label_bgr(label: str) -> tuple[int, int, int]:
+    """Convert class color from RGB to BGR for OpenCV."""
+    rgb = CLASS_COLORS.get(canonicalize_label(label), FALLBACK_COLOR)
+    return rgb[2], rgb[1], rgb[0]
+
+
 CSS = """
 :root {
     --primary-color: #1e40af;
@@ -270,14 +299,15 @@ def run_native_webcam_detection(model_name: str, confidence_threshold: float) ->
                                ) if box.cls is not None else -1
                 confidence = float(
                     box.conf[0].item()) if box.conf is not None else 0.0
-                label = names.get(class_id, str(class_id))
+                label = canonicalize_label(names.get(class_id, str(class_id)))
                 display_text = f"{label} {confidence:.2f}"
+                box_color = color_for_label_bgr(label)
 
                 cv2.rectangle(
                     frame,
                     (int(x1), int(y1)),
                     (int(x2), int(y2)),
-                    (0, 255, 0),
+                    box_color,
                     2,
                 )
 
@@ -296,7 +326,7 @@ def run_native_webcam_detection(model_name: str, confidence_threshold: float) ->
                     frame,
                     (text_x, text_y - text_height - baseline - 4),
                     (text_x + text_width + 8, text_y + baseline - 4),
-                    (0, 255, 0),
+                    box_color,
                     -1,
                 )
                 cv2.putText(
@@ -338,9 +368,10 @@ def extract_detections(result) -> list[dict[str, object]]:
         class_id = int(box.cls[0].item())
         confidence = float(box.conf[0].item())
         x1, y1, x2, y2 = [int(round(value)) for value in box.xyxy[0].tolist()]
+        label = canonicalize_label(names.get(class_id, str(class_id)))
         detections.append(
             {
-                "label": names.get(class_id, str(class_id)),
+                "label": label,
                 "confidence": round(confidence, 4),
                 "x1": x1,
                 "y1": y1,
@@ -360,7 +391,7 @@ def draw_detections(image: Image.Image, detections: list[dict[str, object]]) -> 
     line_width = max(2, round(min(canvas.size) / 180))
 
     for detection in detections:
-        label = str(detection["label"])
+        label = canonicalize_label(str(detection["label"]))
         confidence = float(detection["confidence"])
         x1 = int(detection["x1"])
         y1 = int(detection["y1"])
