@@ -18,7 +18,7 @@ from ultralytics import YOLO
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = PROJECT_ROOT / "models"
 
-DEFAULT_MODEL_NAME = "face_mask_detection_faster_rcnn_final.pt"
+DEFAULT_MODEL_NAME = "face_mask_detection_yolo26m_v1_best.pt"
 DEFAULT_CONFIDENCE = 0.45
 DEFAULT_IOU = 0.45
 
