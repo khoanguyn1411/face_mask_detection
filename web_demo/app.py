@@ -479,7 +479,8 @@ def build_demo() -> gr.Blocks:
                             sources=["upload", "clipboard"],
                             label="Input image",
                         )
-                        detect_button = gr.Button("Run detection", variant="primary")
+                        detect_button = gr.Button(
+                            "Run detection", variant="primary")
 
                         if example_inputs:
                             gr.Examples(
@@ -489,7 +490,8 @@ def build_demo() -> gr.Blocks:
                             )
 
                     with gr.Column(scale=7, elem_id="result-panel"):
-                        output_image = gr.Image(type="pil", label="Annotated result")
+                        output_image = gr.Image(
+                            type="pil", label="Annotated result")
                         summary = gr.Markdown(value=initial_summary())
                         detections_table = gr.Dataframe(
                             value=empty_table(),
