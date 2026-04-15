@@ -7,3 +7,4 @@ runs
 face_detector.tflite
 .DS_Store
 models
+deprecated

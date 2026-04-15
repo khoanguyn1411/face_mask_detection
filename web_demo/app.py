@@ -25,7 +25,7 @@ DEFAULT_IOU = 0.45
 # Define the two models to use
 MODEL_FASTER_RCNN = MODELS_DIR / "face_mask_detection_faster_rcnn_final.pt"
 MODEL_YOLO26M = MODELS_DIR / "face_mask_detection_yolo26m_v1_best.pt"
-IMAGE_SIZE = 640
+IMAGE_SIZE = 192  # Must match model training imgsz (trained at 192)
 MAX_DETECTIONS = 300
 TABLE_COLUMNS = ["label", "confidence", "x1", "y1", "x2", "y2"]
 EXAMPLE_IMAGES = [
@@ -49,9 +49,9 @@ def canonicalize_label(label: str) -> str:
     normalized = " ".join(normalized.split())
 
     if normalized in {"with mask", "mask", "masked"}:
-        return "With Mask"
+        return label
     if normalized in {"without mask", "no mask", "withoutmask", "nomask"}:
-        return "Without Mask"
+        return label
     if normalized in {
         "mask weared incorrect",
         "mask worn incorrect",
@@ -59,7 +59,7 @@ def canonicalize_label(label: str) -> str:
         "mask incorrect",
         "incorrectly worn mask",
     }:
-        return "Mask Weared Incorrect"
+        return label
 
     return label
 
