@@ -70,28 +70,28 @@ face_mask_detection/
 
 The project merges two public Kaggle datasets:
 
-| Dataset | Source | Format | Images |
-|---------|--------|--------|--------|
-| Face Mask Detection | [andrewmvd/face-mask-detection](https://www.kaggle.com/datasets/andrewmvd/face-mask-detection) | XML (Pascal VOC) | ~853 |
-| Medical Mask Detection | [humansintheloop/medical-mask-detection](https://www.kaggle.com/datasets/humansintheloop/medical-mask-detection) | JSON | ~6,000 |
+| Dataset                | Source                                                                                                           | Format           | Images |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------- | ------ |
+| Face Mask Detection    | [andrewmvd/face-mask-detection](https://www.kaggle.com/datasets/andrewmvd/face-mask-detection)                   | XML (Pascal VOC) | ~853   |
+| Medical Mask Detection | [humansintheloop/medical-mask-detection](https://www.kaggle.com/datasets/humansintheloop/medical-mask-detection) | JSON             | ~6,000 |
 
 After preprocessing, the combined dataset is split as follows:
 
-| Split | Ratio |
-|-------|-------|
-| Training | 70% |
-| Validation | 20% |
-| Test | 10% |
+| Split      | Ratio |
+| ---------- | ----- |
+| Training   | 70%   |
+| Validation | 20%   |
+| Test       | 10%   |
 
 ---
 
 ## Classes
 
-| Class ID | Label | Description |
-|----------|-------|-------------|
-| 0 | With Mask | Face properly covered by mask |
-| 1 | Without Mask | Face with no mask |
-| 2 | Mask Weared Incorrect | Mask worn but not properly covering nose/mouth |
+| Class ID | Label                 | Description                                    |
+| -------- | --------------------- | ---------------------------------------------- |
+| 0        | With Mask             | Face properly covered by mask                  |
+| 1        | Without Mask          | Face with no mask                              |
+| 2        | Mask Weared Incorrect | Mask worn but not properly covering nose/mouth |
 
 ---
 
@@ -140,6 +140,7 @@ python src/load_datasets.py
 ```
 
 This downloads and moves the datasets into the `datasets/` directory:
+
 - `datasets/face-mask-detection/` — XML annotations + images
 - `datasets/medical-mask-detection/` — JSON annotations + images
 
@@ -172,6 +173,7 @@ python src/preprocessing.py
 ```
 
 This script performs:
+
 1. Creates the YOLO directory structure under `datasets/face-mask-detection-processed/`
 2. Parses XML annotations (face-mask-detection) → YOLO format
 3. Parses JSON annotations (medical-mask-detection) → YOLO format with class mapping
@@ -190,6 +192,7 @@ python src/training_model_yolo26m.py
 ```
 
 Key training configuration:
+
 - **Model:** YOLOv26m (pretrained)
 - **Epochs:** 100 (with early stopping, patience=15)
 - **Image Size:** 192×192
@@ -208,6 +211,7 @@ python src/training_model_faster_cnn.py
 ```
 
 Key training configuration:
+
 - **Model:** Faster R-CNN with ResNet50-FPN backbone (pretrained on COCO)
 - **Epochs:** 6 (fast mode) or 15 (full mode)
 - **Optimizer:** SGD (lr=0.002, momentum=0.9)
@@ -215,6 +219,8 @@ Key training configuration:
 - **Scheduler:** StepLR (step=5, gamma=0.1)
 
 Model checkpoints are saved to `models/`.
+
+If you want to use the trained models, you can find them at this [link](https://drive.google.com/drive/folders/10UyXw9bpK7Md0Tsyrw0ik6-hM14ie5VQ?usp=sharing)
 
 ---
 
@@ -254,13 +260,13 @@ The app starts at **http://127.0.0.1:7860** and provides:
 
 Optional environment variables:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `WEB_DEMO_HOST` | `127.0.0.1` | Server bind address |
-| `WEB_DEMO_PORT` | `7860` | Server port |
-| `WEB_DEMO_OPEN_BROWSER` | `false` | Auto-open browser on launch |
-| `WEB_DEMO_SHARE` | `false` | Create a public Gradio share link |
-| `WEB_DEMO_NATIVE_WEBCAM` | `false` | Use OpenCV native webcam instead of Gradio |
+| Variable                 | Default     | Description                                |
+| ------------------------ | ----------- | ------------------------------------------ |
+| `WEB_DEMO_HOST`          | `127.0.0.1` | Server bind address                        |
+| `WEB_DEMO_PORT`          | `7860`      | Server port                                |
+| `WEB_DEMO_OPEN_BROWSER`  | `false`     | Auto-open browser on launch                |
+| `WEB_DEMO_SHARE`         | `false`     | Create a public Gradio share link          |
+| `WEB_DEMO_NATIVE_WEBCAM` | `false`     | Use OpenCV native webcam instead of Gradio |
 
 ---
 
@@ -272,35 +278,35 @@ The following table summarizes the **end-to-end** accuracy results of both model
 
 #### Detection Metrics
 
-| Model | Det Precision | Det Recall | Det F1 | TP | FP | FN |
-|-------|---------------|------------|--------|-----|-----|-----|
-| **YOLOv26m** | 0.8804 | 0.6825 | 0.7689 | 950 | 129 | 442 |
-| **Faster R-CNN** | 0.7901 | 0.8872 | 0.8359 | 1235 | 328 | 157 |
+| Model            | Det Precision | Det Recall | Det F1 | TP   | FP  | FN  |
+| ---------------- | ------------- | ---------- | ------ | ---- | --- | --- |
+| **YOLOv26m**     | 0.8804        | 0.6825     | 0.7689 | 950  | 129 | 442 |
+| **Faster R-CNN** | 0.7901        | 0.8872     | 0.8359 | 1235 | 328 | 157 |
 
 #### Classification Metrics (on matched detections)
 
-| Model | Accuracy | Precision (W) | Recall (W) | F1 (W) | Precision (Macro) | Recall (Macro) | F1 (Macro) | mAP | Avg IoU |
-|-------|----------|---------------|------------|--------|-------------------|----------------|------------|------|---------|
-| **YOLOv26m** | **97.47%** | 97.05% | 97.47% | 97.15% | 86.00% | 76.87% | 80.03% | 0.7426 | 0.8075 |
-| **Faster R-CNN** | **95.95%** | 95.15% | 95.95% | 94.75% | 85.52% | 67.23% | 67.68% | 0.6776 | 0.7894 |
+| Model            | Accuracy   | Precision (W) | Recall (W) | F1 (W) | Precision (Macro) | Recall (Macro) | F1 (Macro) | mAP    | Avg IoU |
+| ---------------- | ---------- | ------------- | ---------- | ------ | ----------------- | -------------- | ---------- | ------ | ------- |
+| **YOLOv26m**     | **97.47%** | 97.05%        | 97.47%     | 97.15% | 86.00%            | 76.87%         | 80.03%     | 0.7426 | 0.8075  |
+| **Faster R-CNN** | **95.95%** | 95.15%        | 95.95%     | 94.75% | 85.52%            | 67.23%         | 67.68%     | 0.6776 | 0.7894  |
 
 #### YOLOv26m — Per-Class Results (matched detections)
 
-| Class | Precision | Recall | F1-Score | Support |
-|-------|-----------|--------|----------|---------|
-| With Mask | 0.98 | 0.99 | 0.99 | 783 |
-| Without Mask | 0.99 | 0.98 | 0.98 | 143 |
-| Mask Weared Incorrect | 0.62 | 0.33 | 0.43 | 24 |
-| **Weighted Avg** | **0.97** | **0.97** | **0.97** | **950** |
+| Class                 | Precision | Recall   | F1-Score | Support |
+| --------------------- | --------- | -------- | -------- | ------- |
+| With Mask             | 0.98      | 0.99     | 0.99     | 783     |
+| Without Mask          | 0.99      | 0.98     | 0.98     | 143     |
+| Mask Weared Incorrect | 0.62      | 0.33     | 0.43     | 24      |
+| **Weighted Avg**      | **0.97**  | **0.97** | **0.97** | **950** |
 
 #### Faster R-CNN — Per-Class Results (matched detections)
 
-| Class | Precision | Recall | F1-Score | Support |
-|-------|-----------|--------|----------|---------|
-| With Mask | 0.97 | 0.99 | 0.98 | 984 |
-| Without Mask | 0.93 | 0.97 | 0.95 | 214 |
-| Mask Weared Incorrect | 0.67 | 0.05 | 0.10 | 37 |
-| **Weighted Avg** | **0.95** | **0.96** | **0.95** | **1235** |
+| Class                 | Precision | Recall   | F1-Score | Support  |
+| --------------------- | --------- | -------- | -------- | -------- |
+| With Mask             | 0.97      | 0.99     | 0.98     | 984      |
+| Without Mask          | 0.93      | 0.97     | 0.95     | 214      |
+| Mask Weared Incorrect | 0.67      | 0.05     | 0.10     | 37       |
+| **Weighted Avg**      | **0.95**  | **0.96** | **0.95** | **1235** |
 
 > **Key takeaway:** YOLOv26m achieves higher classification accuracy on matched detections (97.47% vs 95.95%), while Faster R-CNN has a higher detection recall (88.72% vs 68.25%), meaning it misses fewer faces. Both models struggle significantly with the "Mask Weared Incorrect" class due to its very low sample count.
 
@@ -316,22 +322,22 @@ The following chart shows loss curves and evaluation metrics across 80 training 
 
 #### Best Training Epoch Metrics (Epoch 65)
 
-| Metric | Value |
-|--------|-------|
+| Metric        | Value |
+| ------------- | ----- |
 | **Precision** | 0.706 |
-| **Recall** | 0.614 |
-| **mAP@50** | 0.652 |
+| **Recall**    | 0.614 |
+| **mAP@50**    | 0.652 |
 | **mAP@50-95** | 0.409 |
 
 #### Test Set Overall Accuracy
 
-| Metric | Value |
-|--------|-------|
-| **Accuracy** | 96.20% |
-| **Precision (weighted)** | 95.61% |
-| **Recall (weighted)** | 96.20% |
-| **F1-Score (weighted)** | 95.83% |
-| **Detection Rate** | 79.33% |
+| Metric                    | Value  |
+| ------------------------- | ------ |
+| **Accuracy**              | 96.20% |
+| **Precision (weighted)**  | 95.61% |
+| **Recall (weighted)**     | 96.20% |
+| **F1-Score (weighted)**   | 95.83% |
+| **Detection Rate**        | 79.33% |
 | **Average IoU (matched)** | 0.7977 |
 
 #### Confusion Matrix
@@ -400,13 +406,13 @@ The following chart shows loss curves and evaluation metrics across 80 training 
 
 ## Technologies Used
 
-| Category | Technology |
-|----------|------------|
-| Language | Python 3.10+ |
+| Category         | Technology                                   |
+| ---------------- | -------------------------------------------- |
+| Language         | Python 3.10+                                 |
 | Object Detection | Ultralytics YOLO, Faster R-CNN (torchvision) |
-| Deep Learning | PyTorch, TensorFlow/Keras |
-| Data Processing | OpenCV, Pillow, NumPy, Pandas, scikit-learn |
-| Visualization | Matplotlib, Seaborn, Jupyter Notebook |
-| Web Demo | Gradio |
-| Dataset Source | Kaggle (via kagglehub) |
-| Model Export | ONNX, TorchScript, TFLite |
+| Deep Learning    | PyTorch, TensorFlow/Keras                    |
+| Data Processing  | OpenCV, Pillow, NumPy, Pandas, scikit-learn  |
+| Visualization    | Matplotlib, Seaborn, Jupyter Notebook        |
+| Web Demo         | Gradio                                       |
+| Dataset Source   | Kaggle (via kagglehub)                       |
+| Model Export     | ONNX, TorchScript, TFLite                    |
